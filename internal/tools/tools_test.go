@@ -132,7 +132,7 @@ func TestTruncateUTF8Safe(t *testing.T) {
 	}{
 		{"hello", 10, "hello"},
 		{"привет", 10, "приве"}, // cut at 10 lands mid-4th char, rolls back
-		{"яяяяя", 8, "яяяя"},  // 8 bytes = 4 complete chars
+		{"яяяяя", 8, "яяяя"},    // 8 bytes = 4 complete chars
 		{"abc", 2, "ab"},
 		{"", 5, ""},
 	}
