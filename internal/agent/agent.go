@@ -4,6 +4,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,12 +12,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GovnocoderAI/kern/internal/kerr"
 	"github.com/GovnocoderAI/kern/internal/permission"
 	"github.com/GovnocoderAI/kern/internal/provider"
 	"github.com/GovnocoderAI/kern/internal/tools"
 	"github.com/GovnocoderAI/kern/internal/ui"
 	"github.com/GovnocoderAI/kern/internal/util"
 )
+
+// Observer receives structured agent events. When nil, Kern falls back to the
+// plain console renderer.
+type Observer interface {
+	OnText(delta string)
+	OnToolStart(name, summary string)
+	OnToolResult(name string, ok bool, output string)
+	OnUsage(usage provider.Usage)
+	OnStepDone()
+}
 
 type Agent struct {
 	Provider   provider.Provider
@@ -26,9 +38,21 @@ type Agent struct {
 	Tools      *tools.Registry
 	Perms      *permission.Manager
 	UI         *ui.Console
+	Observer   Observer
 	MaxSteps   int
 	History    []provider.Message
 	Usage      provider.Usage
+}
+
+// RunInput is the input to one agent turn.
+type RunInput struct {
+	// Text is the user's message.
+	Text string
+	// Skill, when set, is the name of an active skill whose prompt is
+	// appended to the system prompt for this turn only.
+	Skill string
+	// SkillPrompt is the skill's prompt body.
+	SkillPrompt string
 }
 
 func New(p provider.Provider, providerID, model, system string, registry *tools.Registry, perms *permission.Manager, console *ui.Console) *Agent {
@@ -50,16 +74,20 @@ func (a *Agent) Reset() {
 }
 
 // Run executes one user turn, including any tool calls, until the model stops.
-func (a *Agent) Run(ctx context.Context, userText string) error {
-	a.History = append(a.History, provider.Text(provider.RoleUser, userText))
+func (a *Agent) Run(ctx context.Context, in RunInput) error {
+	a.History = append(a.History, provider.Text(provider.RoleUser, in.Text))
+	system := a.System
+	if in.Skill != "" && in.SkillPrompt != "" {
+		system += "\n\n" + in.SkillPrompt
+	}
 
 	for step := 0; step < a.MaxSteps; step++ {
 		if err := ctx.Err(); err != nil {
-			return err
+			return kerr.Cancelled()
 		}
 		req := provider.Request{
 			Model:    a.Model,
-			System:   a.System,
+			System:   system,
 			Messages: a.History,
 			Tools:    a.Tools.Defs(),
 		}
@@ -75,7 +103,7 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 			switch ev.Type {
 			case provider.EventText:
 				text.WriteString(ev.Text)
-				a.UI.AssistantDelta(ev.Text)
+				a.emitText(ev.Text)
 			case provider.EventReasoning:
 				// Reasoning is intentionally hidden in the console.
 			case provider.EventToolCall:
@@ -87,16 +115,29 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 					a.Usage.InputTokens += ev.Usage.InputTokens
 					a.Usage.OutputTokens += ev.Usage.OutputTokens
 					a.Usage.TotalTokens += ev.Usage.TotalTokens
+					a.emitUsage(*ev.Usage)
 				}
 			case provider.EventError:
 				streamErr = ev.Err
 			}
 		}
+		if ctx.Err() != nil {
+			// Interruption mid-stream: record the partial text as context so
+			// the next turn does not repeat it, then report the cancellation.
+			if text.Len() > 0 {
+				a.History = append(a.History, provider.Message{
+					Role:  provider.RoleAssistant,
+					Parts: []provider.Part{{Type: provider.PartText, Text: text.String()}},
+				})
+			}
+			a.repairHistory()
+			return kerr.Cancelled()
+		}
 		if text.Len() > 0 {
-			a.UI.AssistantEnd()
+			a.emitStepDone()
 		}
 		if streamErr != nil {
-			return streamErr
+			return kerr.Wrap(classify(streamErr), streamErr, "provider stream failed")
 		}
 
 		assistant := provider.Message{Role: provider.RoleAssistant}
@@ -117,27 +158,133 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 		for i := range calls {
 			call := calls[i]
 			summary := summarizeCall(call)
-			a.UI.ToolStart(call.Name, summary)
+			a.emitToolStart(call.Name, summary)
 
 			result, isErr := a.execute(ctx, call)
+			if ctx.Err() != nil {
+				a.History = append(a.History, toolResultMsg(call.ID, call.Name, "interrupted by user", true))
+				a.repairHistory()
+				return kerr.Cancelled()
+			}
 			ok := !isErr
-			a.UI.ToolResult(call.Name, ok, summarizeResult(result))
+			a.emitToolResult(call.Name, ok, summarizeResult(result))
 
-			a.History = append(a.History, provider.Message{
-				Role: provider.RoleTool,
-				Parts: []provider.Part{{
-					Type: provider.PartToolResult,
-					ToolResult: &provider.ToolResult{
-						CallID:  call.ID,
-						Name:    call.Name,
-						Content: result,
-						IsError: isErr,
-					},
-				}},
-			})
+			a.History = append(a.History, toolResultMsg(call.ID, call.Name, result, isErr))
 		}
 	}
-	return fmt.Errorf("stopped after %d steps without a final answer", a.MaxSteps)
+	return kerr.User("stopped after %d steps without a final answer", a.MaxSteps)
+}
+
+// repairHistory guarantees that every assistant tool_call is followed by a
+// matching tool result. Anthropic rejects requests that violate this
+// invariant, and a cancelled turn must not leave the history broken.
+func (a *Agent) repairHistory() {
+	// Collect result call IDs that are already present.
+	have := map[string]bool{}
+	for i := len(a.History) - 1; i >= 0; i-- {
+		m := a.History[i]
+		if m.Role == provider.RoleTool {
+			for _, p := range m.Parts {
+				if p.Type == provider.PartToolResult && p.ToolResult != nil {
+					have[p.ToolResult.CallID] = true
+				}
+			}
+		}
+	}
+	// Patch in missing results, in reverse order of the assistant messages.
+	var patch []provider.Message
+	for i := len(a.History) - 1; i >= 0; i-- {
+		m := a.History[i]
+		if m.Role != provider.RoleAssistant {
+			continue
+		}
+		for _, p := range m.Parts {
+			if p.Type != provider.PartToolCall || p.ToolCall == nil {
+				continue
+			}
+			id := p.ToolCall.ID
+			if id == "" {
+				id = fmt.Sprintf("kern-synth-%d", i)
+			}
+			if !have[id] {
+				patch = append(patch, toolResultMsg(id, p.ToolCall.Name, "(no result: the turn was interrupted)", true))
+				have[id] = true
+			}
+		}
+	}
+	if len(patch) > 0 {
+		// Tool results must sit immediately after the assistant message that
+		// called them; appending to the tail is correct because no later
+		// user message has been added yet.
+		a.History = append(a.History, patch...)
+	}
+}
+
+func toolResultMsg(callID, name, content string, isErr bool) provider.Message {
+	return provider.Message{
+		Role: provider.RoleTool,
+		Parts: []provider.Part{{
+			Type: provider.PartToolResult,
+			ToolResult: &provider.ToolResult{
+				CallID:  callID,
+				Name:    name,
+				Content: content,
+				IsError: isErr,
+			},
+		}},
+	}
+}
+
+// classify maps a provider stream error to a kerr code.
+func classify(err error) kerr.Code {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return kerr.CodeCancelled
+	}
+	if status, ok := provider.IsHTTPError(err); ok {
+		if status >= 400 && status < 500 {
+			return kerr.CodeProvider
+		}
+		return kerr.CodeProvider
+	}
+	return kerr.CodeProvider
+}
+
+func (a *Agent) emitText(delta string) {
+	if a.Observer != nil {
+		a.Observer.OnText(delta)
+		return
+	}
+	a.UI.AssistantDelta(delta)
+}
+
+func (a *Agent) emitStepDone() {
+	if a.Observer != nil {
+		a.Observer.OnStepDone()
+		return
+	}
+	a.UI.AssistantEnd()
+}
+
+func (a *Agent) emitToolStart(name, summary string) {
+	if a.Observer != nil {
+		a.Observer.OnToolStart(name, summary)
+		return
+	}
+	a.UI.ToolStart(name, summary)
+}
+
+func (a *Agent) emitToolResult(name string, ok bool, output string) {
+	if a.Observer != nil {
+		a.Observer.OnToolResult(name, ok, output)
+		return
+	}
+	a.UI.ToolResult(name, ok, output)
+}
+
+func (a *Agent) emitUsage(usage provider.Usage) {
+	if a.Observer != nil {
+		a.Observer.OnUsage(usage)
+	}
 }
 
 func (a *Agent) execute(ctx context.Context, call provider.ToolCall) (string, bool) {
@@ -194,7 +341,11 @@ func shorten(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	s = s[:n-1]
+	for len(s) > 0 && (s[len(s)-1]&0xC0) == 0x80 {
+		s = s[:len(s)-1]
+	}
+	return s + "…"
 }
 
 // BuildSystemPrompt assembles the base prompt, environment and AGENTS.md files.

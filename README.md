@@ -1,30 +1,19 @@
 # Kern
 
-> **The core of your terminal.**
-
-Kern is a fast, open-source coding agent that lives in your terminal. It is built in Go, ships as a single static binary, and works as a drop-in companion for existing `opencode` configuration.
-
-```
-  ▄▄
- █  █  K E R N
- █▄▄█  the core of your terminal
-```
+Kern is a fast, open-source coding agent for the terminal. Built in Go, it ships
+as a single static binary, streams chat and tool calls from any OpenAI-compatible
+or Anthropic provider, and works as a drop-in companion for existing `opencode`
+configuration files.
 
 [![CI](https://github.com/GovnocoderAI/kern/actions/workflows/ci.yml/badge.svg)](https://github.com/GovnocoderAI/kern/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-FFB000.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/go-1.23%2B-22D3EE.svg)](https://go.dev)
 
 ## Status
 
-Kern is currently in **v0.1 development**. The core agent, providers, tools, permissions and console UI work end to end. The full-screen TUI, MCP, subagents, LSP and a web UI are on the [roadmap](docs/ROADMAP.md).
-
-## Why Kern
-
-- **Fast** — a single Go binary, no Node runtime, low memory, quick startup.
-- **Compatible** — reads `opencode.json` / `opencode.jsonc` and `kern.json` / `kern.jsonc` without migration.
-- **Capable** — streaming chat, tool calling, file editing, shell, search, sessions and permissions.
-- **Portable** — Linux and Windows on x64 and arm64, with no cgo.
-- **Yours** — Apache-2.0, no telemetry, keys stay on your machine.
+Kern is in **v0.2 development**: the core agent, providers, tools, permissions,
+sessions and console UI work end to end; a full-screen TUI is in progress; the
+headless server, web UI, role-based agents, LSP, plugins and MCP are on the
+[roadmap](docs/ROADMAP.md).
 
 ## Features
 
@@ -32,33 +21,32 @@ Kern is currently in **v0.1 development**. The core agent, providers, tools, per
 - Built-in tools: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `ls`, `todo`, `webfetch`.
 - Permission model: `allow` / `ask` / `deny` rules, workspace sandbox, `--auto` mode.
 - Sessions: resume with `-c`, target with `-s`, fork, list, export and import.
-- Console UI with the Amber/Ember palette, `/model`, `/models`, `/tools`, `/cost`.
-- `kern run` for scripts and CI, plus a full interactive REPL.
-- Config variable substitution: `{env:NAME}` and `{file:path}`.
+- Console and full-screen TUI (the TUI is not yet released; use `kern mini` for the line interface).
+- `kern run` for scripts and CI.
+- Reads `opencode.json` / `opencode.jsonc` and `kern.json` / `kern.jsonc` without migration,
+  with `{env:NAME}` and `{file:path}` substitution.
 
 ## Install
 
 ### From source
 
-Requires Go 1.23 or newer.
+Requires Go 1.26 or newer.
 
 ```bash
 git clone https://github.com/GovnocoderAI/kern.git
 cd kern
-go build -ldflags "-s -w" -o bin/kern ./cmd/kern
+make build
 ```
 
-### Scripts
-
-Once releases are published:
+### Once releases are published
 
 ```bash
-# Linux / macOS (WSL)
+# Linux (and macOS via a static build)
 curl -fsSL https://raw.githubusercontent.com/GovnocoderAI/kern/main/scripts/install.sh | sh
 ```
 
 ```powershell
-# Windows (PowerShell)
+# Windows
 irm https://raw.githubusercontent.com/GovnocoderAI/kern/main/scripts/install.ps1 | iex
 ```
 
@@ -66,13 +54,13 @@ irm https://raw.githubusercontent.com/GovnocoderAI/kern/main/scripts/install.ps1
 
 ```bash
 kern                      # interactive session in the current project
-kern ~/code/my-project    # start in a different project
+kern mini ~/code/project  # minimal line interface
 kern run "explain this repository"
 kern models               # list configured models
 kern doctor               # diagnose config, providers and keys
 ```
 
-Inside the interactive session:
+Inside an interactive session:
 
 ```
 /help              show commands
@@ -93,12 +81,9 @@ Kern loads, from lowest to highest precedence:
 2. Global config (`~/.config/opencode/opencode.json[c]`, `~/.config/kern/kern.json[c]`).
 3. Project config (`opencode.json[c]`, `kern.json[c]`, `.opencode/`, `.kern/`) from the filesystem root down to your working directory.
 
-Both the legacy opencode `provider` shape and the newer `providers` shape are supported.
-
 ```jsonc
 {
-  "$schema": "https://opencode.ai/config.json",
-  "model": "plusvibe/claude-opus-5.5",
+  "model": "plusvibe/[REDACTED].5",
   "provider": {
     "plusvibe": {
       "npm": "@ai-sdk/openai-compatible",
@@ -107,7 +92,7 @@ Both the legacy opencode `provider` shape and the newer `providers` shape are su
         "apiKey": "{env:PLUSVIBE_API_KEY}"
       },
       "models": {
-        "claude-opus-5.5": { "name": "Claude Opus 5.5", "attachment": true }
+        "[REDACTED].5": { "name": "Claude Opus 5.5", "attachment": true }
       }
     }
   }
@@ -118,7 +103,7 @@ Overlay anything with `~/.config/kern/kern.json` or a project-level `kern.json`:
 
 ```jsonc
 {
-  "model": "plusvibe/claude-opus-5.5",
+  "model": "plusvibe/[REDACTED].5",
   "permissions": [
     { "action": "shell", "resource": "git push *", "effect": "ask" },
     { "action": "shell", "resource": "rm -rf *", "effect": "deny" }
@@ -145,8 +130,9 @@ kern auth remove plusvibe
 
 | Command | Description |
 | --- | --- |
-| `kern [project]` | Start the interactive session |
-| `kern mini [project]` | Start the minimal interactive interface |
+| `kern [project]` | Start the session (full-screen TUI where available) |
+| `kern mini [project]` | Start the minimal line interface |
+| `kern tui [project]` | Start the full-screen terminal interface |
 | `kern run [message..]` | Run one prompt non-interactively |
 | `kern models [provider]` | List models (`--remote` fetches from the provider) |
 | `kern config path\|show\|validate` | Inspect resolved configuration |
@@ -160,11 +146,13 @@ kern auth remove plusvibe
 
 ### Global flags
 
-`-m/--model`, `-c/--continue`, `-s/--session`, `--fork`, `--prompt`, `--agent`, `--auto`, `--mini`, `--pure`, `--print-logs`, `--log-level`, `--port`, `--hostname`, `--mdns`, `--mdns-domain`, `--cors`, `--no-replay`, `--replay-limit`.
+`-m/--model`, `-c/--continue`, `-s/--session`, `--fork`, `--prompt`, `--auto`, `--mini`.
 
 ## Permissions
 
-By default, reads inside the workspace are allowed. Writes, edits, shell commands and web fetches ask for approval. Rules are evaluated last-match-first and support globs:
+By default, reads inside the workspace are allowed. Writes, edits, shell commands
+and web fetches ask for approval. Rules are evaluated last-match-first and support
+globs:
 
 ```jsonc
 {
@@ -175,7 +163,9 @@ By default, reads inside the workspace are allowed. Writes, edits, shell command
 }
 ```
 
-`--auto` approves anything not explicitly denied. Paths are confined to the workspace; symlink and `..` escapes are rejected.
+`--auto` approves anything not explicitly denied. File paths are confined to the
+workspace; `..` escapes are rejected. Note: the sandbox resolves logical paths,
+not the filesystem symlinks beneath them.
 
 ## Architecture
 
@@ -188,19 +178,23 @@ internal/agent      tool-calling loop and system prompt
 internal/tools      file, shell and search tools
 internal/permission allow/ask/deny rules
 internal/session    persisted sessions
+internal/app        composition root shared by the frontends
+internal/tui        full-screen terminal interface
 internal/ui         console presentation
 ```
 
 ## Security
 
-- No telemetry. Nothing leaves your machine except provider requests you configure.
-- Keys are never printed by `config show` and are stored with `0600` permissions.
-- Tool paths are sandboxed to the workspace.
+- No telemetry. Nothing leaves your machine except the provider requests you configure.
+- API keys are never printed by `config show` and are stored with `0600` permissions.
+- File tool paths are sandboxed to the workspace.
 - See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Highlights: full-screen TUI, MCP, subagents, plugins, LSP, web search, headless server and a web UI.
+See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: finishing the TUI, context
+compaction, the headless server, a web UI, role-based subagents, LSP, plugins
+and MCP.
 
 ## Contributing
 

@@ -41,14 +41,22 @@ type ProviderOptions struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
+// ProviderKindField is the explicit kind override in config JSON.
+// It is used for deserialization and validation.
+type ProviderKindField string
+
+// ValidKinds lists the wire protocols Kern supports.
+var ValidKinds = []string{"openai", "anthropic", "google"}
+
 type Provider struct {
-	ID       string           `json:"-"`
-	NPM      string           `json:"npm,omitempty"`
-	Name     string           `json:"name,omitempty"`
-	Options  ProviderOptions  `json:"options,omitempty"`
-	Settings ProviderOptions  `json:"settings,omitempty"`
-	Models   map[string]Model `json:"models,omitempty"`
-	Extra    map[string]any   `json:"-"`
+	ID           string           `json:"-"`
+	NPM          string           `json:"npm,omitempty"`
+	Name         string           `json:"name,omitempty"`
+	KindOverride string           `json:"kind,omitempty"`
+	Options      ProviderOptions  `json:"options,omitempty"`
+	Settings     ProviderOptions  `json:"settings,omitempty"`
+	Models       map[string]Model `json:"models,omitempty"`
+	Extra        map[string]any   `json:"-"`
 }
 
 type Agent struct {
@@ -318,6 +326,10 @@ func mergeOptions(dst *ProviderOptions, src ProviderOptions) {
 
 // Kind maps a provider to the wire protocol implementation.
 func (p *Provider) Kind() string {
+	// An explicit kind in the config wins over inference.
+	if p.KindOverride != "" {
+		return p.KindOverride
+	}
 	s := strings.ToLower(p.NPM + " " + p.ID + " " + p.Name)
 	switch {
 	case strings.Contains(s, "anthropic"):

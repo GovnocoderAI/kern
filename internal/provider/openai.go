@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,7 +58,7 @@ func (o *OpenAI) Models(ctx context.Context) ([]ModelInfo, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("%s: HTTP %d: %s", o.ProviderID, resp.StatusCode, strings.TrimSpace(string(b)))
+		return nil, &httpError{ProviderID: o.ProviderID, Status: resp.StatusCode, Body: strings.TrimSpace(string(b))}
 	}
 	var payload struct {
 		Data []struct {
@@ -109,13 +110,18 @@ func (o *OpenAI) Stream(ctx context.Context, req Request) (<-chan Event, error) 
 		defer close(ch)
 		resp, err := o.client().Do(httpReq)
 		if err != nil {
-			send(ctx, ch, errorEvent(err))
+			var he *httpError
+			cause := err
+			if errors.As(err, &he) {
+				cause = &httpError{ProviderID: o.ProviderID, Status: he.Status, Body: he.Body, Err: err}
+			}
+			send(ctx, ch, errorEvent(cause))
 			return
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode >= 400 {
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-			send(ctx, ch, errorEvent(fmt.Errorf("%s: HTTP %d: %s", o.ProviderID, resp.StatusCode, strings.TrimSpace(string(b)))))
+			send(ctx, ch, errorEvent(&httpError{ProviderID: o.ProviderID, Status: resp.StatusCode, Body: strings.TrimSpace(string(b))}))
 			return
 		}
 

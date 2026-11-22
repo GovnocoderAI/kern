@@ -22,9 +22,9 @@ You will get an acknowledgement as soon as possible. We aim to publish an adviso
 
 ## Security model
 
-- **No telemetry.** Kern only talks to the model providers you configure (plus an update check if enabled manually).
+- **No telemetry.** Kern only talks to the model providers you configure.
 - **Credentials.** API keys are resolved from provider config, `~/.config/kern/auth.json`, opencode's `auth.json`, or environment variables. Kern never prints full keys (`config show` masks them) and writes `auth.json` with `0600` permissions.
-- **Workspace sandbox.** File tools reject paths that resolve outside the working directory, including `..` escapes.
+- **Workspace sandbox.** File tools reject paths that resolve outside the working directory, including `..` escapes. The check is performed on the logical path; symlinks under the workspace are not resolved, so a link pointing outside the workspace is not blocked. This is being improved.
 - **Permissions.** Writes, edits, shell commands and web fetches require approval by default. Explicit `deny` rules always win, even with `--auto`.
 - **Shell execution.** Commands run with a timeout and are killed on cancellation.
 

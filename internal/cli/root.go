@@ -19,36 +19,28 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/GovnocoderAI/kern/internal/agent"
+	appcore "github.com/GovnocoderAI/kern/internal/app"
 	"github.com/GovnocoderAI/kern/internal/config"
-	"github.com/GovnocoderAI/kern/internal/permission"
 	"github.com/GovnocoderAI/kern/internal/provider"
 	"github.com/GovnocoderAI/kern/internal/session"
+	"github.com/GovnocoderAI/kern/internal/skill"
 	"github.com/GovnocoderAI/kern/internal/tools"
+	"github.com/GovnocoderAI/kern/internal/tui"
 	"github.com/GovnocoderAI/kern/internal/ui"
 	"github.com/GovnocoderAI/kern/internal/util"
 	"github.com/GovnocoderAI/kern/internal/version"
 )
 
 var (
-	flagModel     string
-	flagAgent     string
-	flagAuto      bool
-	flagPrintLogs bool
-	flagLogLevel  string
-	flagPure      bool
+	flagModel string
+	flagAuto  bool
 
-	flagContinue    bool
-	flagSession     string
-	flagFork        bool
-	flagPrompt      string
-	flagMini        bool
-	flagNoReplay    bool
-	flagReplayLimit int
-	flagPort        int
-	flagHostname    string
-	flagMDNS        bool
-	flagMDNSDomain  string
-	flagCORS        []string
+	flagContinue bool
+	flagSession  string
+	flagFork     bool
+	flagPrompt   string
+	flagMini     bool
+	flagSkill    string
 )
 
 var rootCmd = &cobra.Command{
@@ -63,6 +55,9 @@ var rootCmd = &cobra.Command{
 		workdir := "."
 		if len(args) == 1 {
 			workdir = args[0]
+		}
+		if isTTY() && !flagMini {
+			return runTUI(workdir)
 		}
 		return runInteractive(workdir)
 	},
@@ -79,25 +74,15 @@ func Execute() {
 func init() {
 	pf := rootCmd.PersistentFlags()
 	pf.StringVarP(&flagModel, "model", "m", "", "model to use (provider/model)")
-	pf.StringVar(&flagAgent, "agent", "", "agent to use")
 	pf.BoolVar(&flagAuto, "auto", false, "auto-approve permissions that are not explicitly denied")
-	pf.BoolVar(&flagPrintLogs, "print-logs", false, "print logs to stderr")
-	pf.StringVar(&flagLogLevel, "log-level", "", "log level (DEBUG, INFO, WARN, ERROR)")
-	pf.BoolVar(&flagPure, "pure", false, "run without external plugins")
 	pf.BoolVarP(&flagContinue, "continue", "c", false, "continue the last session")
 	pf.StringVarP(&flagSession, "session", "s", "", "session id to continue")
 	pf.BoolVar(&flagFork, "fork", false, "fork the session when continuing")
 	pf.StringVar(&flagPrompt, "prompt", "", "prompt to use")
 	pf.BoolVar(&flagMini, "mini", false, "start the minimal interface")
-	pf.BoolVar(&flagNoReplay, "no-replay", false, "disable replay on resume")
-	pf.IntVar(&flagReplayLimit, "replay-limit", 0, "cap replayed messages")
-	pf.IntVar(&flagPort, "port", 0, "port to listen on")
-	pf.StringVar(&flagHostname, "hostname", "127.0.0.1", "hostname to listen on")
-	pf.BoolVar(&flagMDNS, "mdns", false, "enable mDNS service discovery")
-	pf.StringVar(&flagMDNSDomain, "mdns-domain", "kern.local", "mDNS domain")
-	pf.StringArrayVar(&flagCORS, "cors", nil, "additional CORS origins")
+	pf.StringVar(&flagSkill, "skill", "", "activate a skill by name for this run")
 
-	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, miniCmd, statsCmd, agentCmd)
+	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, miniCmd, tuiCmd, statsCmd, agentCmd, skillCmd)
 }
 
 func isTTY() bool {
@@ -124,6 +109,7 @@ type runtimeOptions struct {
 }
 
 type app struct {
+	core       *appcore.App
 	cfg        *config.Config
 	auth       *config.Auth
 	agent      *agent.Agent
@@ -133,147 +119,110 @@ type app struct {
 	providerID string
 	modelID    string
 	workdir    string
+	skills     []skill.Skill
+}
+
+// resolveSkill returns the active skill for the current run, or nil.
+func (r *app) resolveSkill() *skill.Skill {
+	if flagSkill == "" {
+		return nil
+	}
+	for i := range r.skills {
+		if r.skills[i].Name == flagSkill {
+			return &r.skills[i]
+		}
+	}
+	r.console.Error("skill %q not found; see `kern skill list`", flagSkill)
+	return nil
 }
 
 func newRuntime(workdir string, opts runtimeOptions) (*app, error) {
-	abs, err := filepath.Abs(workdir)
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := config.Load(abs)
-	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
-	}
-	auth := config.LoadAuth()
-	store := session.NewStore()
-
-	var sess *session.Session
-	switch {
-	case opts.sessionID != "":
-		sess, err = store.Load(opts.sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("session %s: %w", opts.sessionID, err)
-		}
-	case opts.continueLast:
-		sess, err = store.Latest(abs)
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				return nil, err
-			}
-			sess = session.New(abs, "")
-		}
-	default:
-		sess = session.New(abs, "")
-	}
-	if opts.fork && opts.sessionID != "" {
-		forked := session.New(abs, "")
-		forked.Messages = append([]provider.Message(nil), sess.Messages...)
-		forked.Title = sess.Title + " (fork)"
-		sess = forked
-	}
-
 	modelRef := opts.model
 	if modelRef == "" {
 		modelRef = flagModel
 	}
-	if modelRef == "" && sess.Model != "" && (opts.continueLast || opts.sessionID != "") {
-		modelRef = sess.Model
-	}
-	pid, mid, err := cfg.ResolveModel(modelRef)
+	core, err := appcore.New(appcore.Options{
+		Workdir:     workdir,
+		Model:       modelRef,
+		SessionID:   opts.sessionID,
+		Continue:    opts.continueLast,
+		Fork:        opts.fork,
+		Auto:        opts.auto || flagAuto,
+		Interactive: opts.interactive,
+	})
 	if err != nil {
 		return nil, err
 	}
-	p := cfg.Providers[pid]
-	prov, err := buildProvider(pid, p, cfg.APIKey(pid, auth))
-	if err != nil {
-		return nil, err
+	rt := &app{
+		core:       core,
+		cfg:        core.Config,
+		auth:       core.Auth,
+		agent:      core.Agent,
+		sess:       core.Session,
+		store:      core.Store,
+		console:    core.Console,
+		providerID: core.ProviderID,
+		modelID:    core.ModelID,
+		workdir:    core.Workdir,
 	}
-
-	console := ui.New()
-	var promptFn permission.PromptFunc
-	if opts.interactive {
-		promptFn = func(action, resource string) (bool, error) {
-			return console.Ask(fmt.Sprintf("permission: %s %s", action, resource))
-		}
-	}
-	perms := permission.New(cfg.Permissions, opts.auto || flagAuto, promptFn)
-	registry := tools.NewRegistry(abs, cfg.Shell)
-	system := agent.BuildSystemPrompt(abs, cfg.Instructions)
-	ag := agent.New(prov, pid, mid, system, registry, perms, console)
-	ag.History = sess.Messages
-	ag.Usage = sess.Usage
-
-	sess.Model = pid + "/" + mid
-	sess.Workdir = abs
-
-	return &app{
-		cfg:        cfg,
-		auth:       auth,
-		agent:      ag,
-		sess:       sess,
-		store:      store,
-		console:    console,
-		providerID: pid,
-		modelID:    mid,
-		workdir:    abs,
-	}, nil
-}
-
-func buildProvider(pid string, p *config.Provider, key string) (provider.Provider, error) {
-	if p == nil {
-		return nil, fmt.Errorf("provider %q is not configured", pid)
-	}
-	switch p.Kind() {
-	case "openai":
-		return &provider.OpenAI{
-			ProviderID: pid,
-			BaseURL:    p.Endpoint(),
-			APIKey:     key,
-			Headers:    p.Headers(),
-		}, nil
-	case "anthropic":
-		return &provider.Anthropic{
-			ProviderID: pid,
-			BaseURL:    p.Endpoint(),
-			APIKey:     key,
-			Headers:    p.Headers(),
-		}, nil
-	case "google":
-		return nil, fmt.Errorf("provider %q: Google Gemini is not implemented yet", pid)
-	default:
-		return nil, fmt.Errorf("provider %q: unsupported kind %q", pid, p.Kind())
-	}
+	rt.skills = skill.Load(rt.workdir)
+	return rt, nil
 }
 
 func (r *app) sync() {
-	r.sess.Messages = r.agent.History
-	r.sess.Usage = r.agent.Usage
-	r.sess.UpdatedAt = time.Now()
+	r.core.Sync()
 }
 
 func (r *app) save() {
-	r.sync()
-	if err := r.store.Save(r.sess); err != nil {
+	if err := r.core.Save(); err != nil {
 		r.console.Warn("could not save session: %v", err)
 	}
 }
 
 func (r *app) rebuildModel(ref string) error {
-	pid, mid, err := r.cfg.ResolveModel(ref)
-	if err != nil {
+	if err := r.core.RebuildModel(ref); err != nil {
 		return err
 	}
-	prov, err := buildProvider(pid, r.cfg.Providers[pid], r.cfg.APIKey(pid, r.auth))
-	if err != nil {
-		return err
-	}
-	r.agent.Provider = prov
-	r.agent.ProviderID = pid
-	r.agent.Model = mid
-	r.providerID = pid
-	r.modelID = mid
-	r.sess.Model = pid + "/" + mid
+	r.agent = r.core.Agent
+	r.sess = r.core.Session
+	r.providerID = r.core.ProviderID
+	r.modelID = r.core.ModelID
 	return nil
+}
+
+// runSkillInput returns the RunInput for the given user text, attaching the
+// active skill (from --skill) to the system prompt.
+func (r *app) runInput(text string) agent.RunInput {
+	in := agent.RunInput{Text: text}
+	if sk := r.resolveSkill(); sk != nil {
+		in.Skill = sk.Name
+		in.SkillPrompt = sk.Prompt
+	}
+	return in
+}
+
+func runTUI(workdir string) error {
+	return tui.Run(appcore.Options{
+		Workdir:   workdir,
+		Model:     flagModel,
+		SessionID: flagSession,
+		Continue:  flagContinue,
+		Fork:      flagFork,
+		Auto:      flagAuto,
+	})
+}
+
+var tuiCmd = &cobra.Command{
+	Use:   "tui [project]",
+	Short: "Start the full-screen terminal interface",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		workdir := "."
+		if len(args) == 1 {
+			workdir = args[0]
+		}
+		return runTUI(workdir)
+	},
 }
 
 // ---- interactive ----
@@ -322,7 +271,7 @@ func runInteractive(workdirArg string) error {
 			}
 			continue
 		}
-		if err := rt.agent.Run(context.Background(), line); err != nil {
+		if err := rt.agent.Run(context.Background(), rt.runInput(line)); err != nil {
 			c.Error("%v", err)
 		}
 		rt.sync()
@@ -425,7 +374,7 @@ var runCmd = &cobra.Command{
 			return err
 		}
 		defer rt.save()
-		if err := rt.agent.Run(context.Background(), prompt); err != nil {
+		if err := rt.agent.Run(context.Background(), rt.runInput(prompt)); err != nil {
 			return err
 		}
 		rt.sync()
@@ -464,7 +413,7 @@ var modelsCmd = &cobra.Command{
 			fmt.Printf("%s (%s) %s\n", pid, p.Kind(), p.Endpoint())
 			local := p.SortedModels()
 			if modelsRemote || len(local) == 0 {
-				prov, err := buildProvider(pid, p, cfg.APIKey(pid, auth))
+				prov, err := provider.FromConfig(pid, p, cfg.APIKey(pid, auth))
 				if err == nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 					remote, rerr := prov.Models(ctx)
@@ -881,13 +830,55 @@ var agentCmd = &cobra.Command{
 	},
 }
 
+var skillCmd = &cobra.Command{
+	Use:   "skill",
+	Short: "List and validate skills",
+}
+
+var skillListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List available skills (project + global)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		skills := skill.Load(cwd())
+		if len(skills) == 0 {
+			fmt.Println("no skills found (create .kern/skills/*.md)")
+			return nil
+		}
+		for _, s := range skills {
+			fmt.Printf("%s  %s  %s\n", s.Name, s.Description, s.Path)
+		}
+		return nil
+	},
+}
+
+var skillValidateCmd = &cobra.Command{
+	Use:   "validate",
+	Short: "Validate all skill files",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		skills := skill.Load(cwd())
+		problems := skill.Validate(skills)
+		if len(problems) == 0 {
+			fmt.Printf("ok: %d skill(s) valid\n", len(skills))
+			return nil
+		}
+		for _, p := range problems {
+			fmt.Println("problem: " + p)
+		}
+		return fmt.Errorf("%d problem(s) found", len(problems))
+	},
+}
+
+func init() {
+	skillCmd.AddCommand(skillListCmd, skillValidateCmd)
+}
+
 // ---- version / completion / init ----
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("kern " + version.String())
+		fmt.Print(version.Detailed())
 	},
 }
 
@@ -920,13 +911,37 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("%s already exists", path)
 		}
 		content := `{
-  "model": "openai/gpt-4o"
+  "model": "plusvibe/[REDACTED].5",
+  "provider": {
+    "plusvibe": {
+      "options": {
+        "baseURL": "https://api.plusvibe.com/v1",
+        "apiKey": "${PLUSVIBE_API_KEY}"
+      }
+    }
+  }
 }
 `
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return err
 		}
 		fmt.Printf("created %s\n", path)
+		fmt.Println("set PLUSVIBE_API_KEY in your environment or add the key under provider.plusvibe.options.apiKey")
+		// Scaffold a sample skill.
+		skillDir := filepath.Join(cwd(), ".kern", "skills")
+		if !util.Exists(skillDir) {
+			if err := os.MkdirAll(skillDir, 0o755); err == nil {
+				example := `---
+name: hello
+description: Greet the user in a friendly way
+---
+You are a friendly assistant. When the user sends a message, greet them warmly and ask how you can help.
+`
+				if err := os.WriteFile(filepath.Join(skillDir, "hello.md"), []byte(example), 0o644); err == nil {
+					fmt.Printf("created %s (sample skill)\n", filepath.Join(skillDir, "hello.md"))
+				}
+			}
+		}
 		return nil
 	},
 }

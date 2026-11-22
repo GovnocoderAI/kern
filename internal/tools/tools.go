@@ -17,6 +17,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -44,10 +46,127 @@ type Todo struct {
 	Priority string `json:"priority,omitempty"`
 }
 
+// Change records a file mutation so the UI can show diffs.
+type Change struct {
+	Path   string    `json:"path"`
+	Before string    `json:"before"`
+	After  string    `json:"after"`
+	At     time.Time `json:"at"`
+}
+
+// Process records a shell command executed by the agent.
+type Process struct {
+	ID       string    `json:"id"`
+	Command  string    `json:"command"`
+	Cwd      string    `json:"cwd"`
+	Started  time.Time `json:"started"`
+	Ended    time.Time `json:"ended"`
+	ExitCode int       `json:"exit_code"`
+	Output   string    `json:"output"`
+	Running  bool      `json:"running"`
+
+	cancel context.CancelFunc
+}
+
+var processSeq atomic.Uint64
+
 type Env struct {
 	Workdir string
 	Shell   string
-	Todos   []Todo
+
+	mu        sync.Mutex
+	Todos     []Todo
+	Changes   []Change
+	Processes []*Process
+}
+
+func (e *Env) SetTodos(todos []Todo) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.Todos = append([]Todo(nil), todos...)
+}
+
+func (e *Env) TodosSnapshot() []Todo {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]Todo(nil), e.Todos...)
+}
+
+func (e *Env) AddChange(c Change) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.Changes = append(e.Changes, c)
+}
+
+func (e *Env) ChangesSnapshot() []Change {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]Change(nil), e.Changes...)
+}
+
+func (e *Env) StartProcess(command, cwd string, cancel context.CancelFunc) *Process {
+	p := &Process{
+		ID:      fmt.Sprintf("p%d", processSeq.Add(1)),
+		Command: command,
+		Cwd:     cwd,
+		Started: time.Now(),
+		Running: true,
+		cancel:  cancel,
+	}
+	e.mu.Lock()
+	e.Processes = append(e.Processes, p)
+	e.mu.Unlock()
+	return p
+}
+
+func (e *Env) EndProcess(p *Process, exitCode int, output string) {
+	if p == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	p.Ended = time.Now()
+	p.ExitCode = exitCode
+	p.Output = output
+	p.Running = false
+	p.cancel = nil
+}
+
+// SetProcessOutput updates a running process's output buffer.
+func (e *Env) SetProcessOutput(id, output string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, p := range e.Processes {
+		if p.ID == id {
+			p.Output = output
+			return
+		}
+	}
+}
+
+func (e *Env) ProcessesSnapshot() []Process {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]Process, 0, len(e.Processes))
+	for _, p := range e.Processes {
+		out = append(out, *p)
+	}
+	return out
+}
+
+func (e *Env) KillProcess(id string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, p := range e.Processes {
+		if p.ID == id && p.Running && p.cancel != nil {
+			p.cancel()
+			return true
+		}
+	}
+	return false
 }
 
 type Tool interface {
@@ -68,6 +187,7 @@ func NewRegistry(workdir, shell string) *Registry {
 	for _, t := range []Tool{
 		&ReadTool{}, &WriteTool{}, &EditTool{}, &BashTool{},
 		&GrepTool{}, &GlobTool{}, &LsTool{}, &TodoTool{}, &WebFetchTool{},
+		&ProcessTool{}, &JokeTool{},
 	} {
 		r.tools[t.Name()] = t
 		r.order = append(r.order, t.Name())
@@ -109,6 +229,8 @@ func Action(name string) string {
 		return "shell"
 	case "webfetch":
 		return "webfetch"
+	case "process", "joke":
+		return "read"
 	default:
 		return "read"
 	}
@@ -129,6 +251,7 @@ func resolve(workdir, p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Lexical check: reject obvious ".." escapes.
 	rel, err := filepath.Rel(root, abs)
 	if err != nil {
 		return "", err
@@ -136,14 +259,58 @@ func resolve(workdir, p string) (string, error) {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return "", fmt.Errorf("path %q is outside the workspace", p)
 	}
+	// Symlink check: follow the real path and verify it still resolves to
+	// the workspace root. This blocks symlinks and directory junctions
+	// that point outside the workspace.
+	realAbs, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		realRoot, rootErr := filepath.EvalSymlinks(root)
+		if rootErr == nil {
+			if realRel, relErr := filepath.Rel(realRoot, realAbs); relErr == nil {
+				if realRel == ".." || strings.HasPrefix(realRel, ".."+string(os.PathSeparator)) {
+					return "", fmt.Errorf("path %q escapes the workspace via symlink", p)
+				}
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		// The path does not exist yet (e.g. a file to be written). Check the
+		// deepest existing ancestor instead.
+		ancestor := abs
+		for {
+			if real, aErr := filepath.EvalSymlinks(ancestor); aErr == nil {
+				realRoot, rootErr := filepath.EvalSymlinks(root)
+				if rootErr != nil {
+					break
+				}
+				if realRel, relErr := filepath.Rel(realRoot, real); relErr == nil {
+					if realRel == ".." || strings.HasPrefix(realRel, ".."+string(os.PathSeparator)) {
+						return "", fmt.Errorf("path %q escapes the workspace via symlink", p)
+					}
+				}
+				break
+			}
+			parent := filepath.Dir(ancestor)
+			if parent == ancestor {
+				break
+			}
+			ancestor = parent
+		}
+	}
 	return abs, nil
 }
 
 func truncate(s string, limit int) (string, bool) {
+	// Never split a UTF-8 sequence: if the cut lands inside a character,
+	// roll back to the last complete character boundary.
 	if len(s) <= limit {
 		return s, false
 	}
-	return s[:limit], true
+	cut := limit
+	for cut > 0 && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	s = s[:cut]
+	return s, true
 }
 
 // ---- read ----
@@ -262,12 +429,14 @@ func (t *WriteTool) Run(ctx context.Context, raw json.RawMessage, env *Env) (str
 	if err != nil {
 		return "", err
 	}
+	before, _ := os.ReadFile(path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(path, []byte(args.Content), 0o644); err != nil {
 		return "", err
 	}
+	env.AddChange(Change{Path: args.Path, Before: string(before), After: args.Content, At: time.Now()})
 	return fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.Path), nil
 }
 
@@ -304,7 +473,8 @@ func (t *EditTool) Run(ctx context.Context, raw json.RawMessage, env *Env) (stri
 	if err != nil {
 		return "", err
 	}
-	content := string(data)
+	before := string(data)
+	content := before
 	count := strings.Count(content, args.OldString)
 	if count == 0 {
 		return "", fmt.Errorf("oldString not found in %s", args.Path)
@@ -321,6 +491,7 @@ func (t *EditTool) Run(ctx context.Context, raw json.RawMessage, env *Env) (stri
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return "", err
 	}
+	env.AddChange(Change{Path: args.Path, Before: before, After: content, At: time.Now()})
 	return fmt.Sprintf("edited %s (%d replacement(s))", args.Path, count), nil
 }
 
@@ -359,47 +530,58 @@ func (t *BashTool) Run(ctx context.Context, raw json.RawMessage, env *Env) (stri
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	shell := env.Shell
-	if runtime.GOOS == "windows" {
-		if shell == "" {
-			shell = "cmd.exe"
-		}
-		if strings.HasSuffix(strings.ToLower(shell), "powershell.exe") || strings.HasSuffix(strings.ToLower(shell), "pwsh.exe") {
-			cmd = exec.CommandContext(runCtx, shell, "-NoProfile", "-Command", args.Command)
-		} else {
-			cmd = exec.CommandContext(runCtx, shell, "/c", args.Command)
-		}
-	} else {
-		if shell == "" {
-			shell = "/bin/sh"
-		}
-		cmd = exec.CommandContext(runCtx, shell, "-c", args.Command)
-	}
+	cmd := shellCommand(runCtx, env.Shell, args.Command)
 	cmd.Dir = cwd
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
+
+	proc := env.StartProcess(args.Command, cwd, cancel)
 	runErr := cmd.Run()
 
 	out, truncated := truncate(buf.String(), maxOutputBytes)
 	if truncated {
 		out += "\n[... output truncated]"
 	}
+	if strings.TrimSpace(out) == "" {
+		out = "(no output)"
+	}
+	timedOut := runCtx.Err() == context.DeadlineExceeded
 	exitCode := 0
 	if runErr != nil {
 		if ee, ok := runErr.(*exec.ExitError); ok {
 			exitCode = ee.ExitCode()
-		} else if runCtx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("command timed out after %ds\n%s", timeout, out), nil
-		} else {
+		} else if !timedOut {
+			env.EndProcess(proc, -1, out)
 			return "", runErr
 		}
 	}
-	if strings.TrimSpace(out) == "" {
-		out = "(no output)"
+	if timedOut {
+		exitCode = -1
+	}
+	env.EndProcess(proc, exitCode, out)
+	if timedOut {
+		return fmt.Sprintf("command timed out after %ds (exit code %d)\n%s\nhint: the command is still running as process %s; use the process tool to read its output or kill it.",
+			timeout, exitCode, out, proc.ID), nil
 	}
 	return fmt.Sprintf("exit code %d\n%s", exitCode, out), nil
+}
+
+func shellCommand(ctx context.Context, shell, command string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		if shell == "" {
+			shell = "cmd.exe"
+		}
+		lower := strings.ToLower(shell)
+		if strings.HasSuffix(lower, "powershell.exe") || strings.HasSuffix(lower, "pwsh.exe") {
+			return exec.CommandContext(ctx, shell, "-NoProfile", "-Command", command)
+		}
+		return exec.CommandContext(ctx, shell, "/c", command)
+	}
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	return exec.CommandContext(ctx, shell, "-c", command)
 }
 
 // ---- grep ----
@@ -600,12 +782,13 @@ func (t *TodoTool) Run(ctx context.Context, raw json.RawMessage, env *Env) (stri
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return "", err
 	}
-	env.Todos = args.Todos
-	if len(env.Todos) == 0 {
+	env.SetTodos(args.Todos)
+	todos := env.TodosSnapshot()
+	if len(todos) == 0 {
 		return "(todo list cleared)", nil
 	}
 	var b strings.Builder
-	for _, todo := range env.Todos {
+	for _, todo := range todos {
 		b.WriteString(fmt.Sprintf("[%s] %s\n", todo.Status, todo.Content))
 	}
 	return strings.TrimRight(b.String(), "\n"), nil
