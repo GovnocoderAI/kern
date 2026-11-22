@@ -79,6 +79,7 @@ type fileConfig struct {
 	SmallModel   string              `json:"small_model"`
 	DefaultAgent string              `json:"default_agent"`
 	Shell        string              `json:"shell"`
+	Theme        string              `json:"theme"`
 	Provider     map[string]Provider `json:"provider"`
 	Providers    map[string]Provider `json:"providers"`
 	Agent        map[string]Agent    `json:"agent"`
@@ -95,6 +96,7 @@ type Config struct {
 	SmallModel   string
 	DefaultAgent string
 	Shell        string
+	Theme        string
 	Providers    map[string]*Provider
 	Agents       map[string]*Agent
 	Permissions  []PermissionRule
@@ -266,6 +268,9 @@ func (c *Config) merge(fc *fileConfig) {
 	if fc.Shell != "" {
 		c.Shell = fc.Shell
 	}
+	if fc.Theme != "" {
+		c.Theme = fc.Theme
+	}
 	for id, p := range fc.Provider {
 		c.mergeProvider(id, p)
 	}
@@ -342,6 +347,7 @@ func (p *Provider) Kind() string {
 }
 
 // Endpoint returns the provider base URL, including any configured override.
+// Provider IDs containing "plusvibe" get the plusvibe endpoint by default.
 func (p *Provider) Endpoint() string {
 	if p.Options.BaseURL != "" {
 		return strings.TrimRight(p.Options.BaseURL, "/")
@@ -354,9 +360,13 @@ func (p *Provider) Endpoint() string {
 		return "https://api.anthropic.com"
 	case "google":
 		return "https://generativelanguage.googleapis.com/v1beta"
-	default:
+	case "openai":
+		if strings.Contains(strings.ToLower(p.ID), "plusvibe") {
+			return "https://plusvibeapi.ru/v1"
+		}
 		return "https://api.openai.com/v1"
 	}
+	return "https://api.openai.com/v1"
 }
 
 // Headers merges configured and static headers.

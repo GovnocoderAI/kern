@@ -106,6 +106,17 @@ type Model struct {
 
 // Run starts the full-screen interface for a prepared session.
 func Run(opts appcore.Options) error {
+	// Create a probe app just to resolve the config and theme.
+	probe, err := appcore.New(opts)
+	if err != nil {
+		return err
+	}
+	themeName := probe.Config.Theme
+	if themeName == "" {
+		themeName = "amber"
+	}
+	initTheme(themeName)
+
 	obs := NewObserver()
 	bridge := newPermBridge()
 	opts.Observer = obs

@@ -23,6 +23,7 @@ import (
 	"github.com/GovnocoderAI/kern/internal/config"
 	"github.com/GovnocoderAI/kern/internal/provider"
 	"github.com/GovnocoderAI/kern/internal/session"
+	"github.com/GovnocoderAI/kern/internal/setup"
 	"github.com/GovnocoderAI/kern/internal/skill"
 	"github.com/GovnocoderAI/kern/internal/tools"
 	"github.com/GovnocoderAI/kern/internal/tui"
@@ -44,18 +45,46 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:           "kern [project]",
+	Use:           "kern [prompt..]",
 	Short:         "Kern — the core of your terminal",
-	Long:          "Kern is a fast, open-source coding agent for the terminal.\nIt is a drop-in companion for opencode configuration files.",
+	Long:          "Kern is a fast, open-source coding agent for the terminal.\nIt reads opencode configuration and supports plusvibe, OpenAI, Anthropic, and Google providers.",
 	Version:       version.String(),
-	Args:          cobra.MaximumNArgs(1),
+	Args:          cobra.ArbitraryArgs,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		workdir := "."
-		if len(args) == 1 {
-			workdir = args[0]
+		// First-run wizard: if no global config exists, run setup before anything else.
+		if !setup.IsInitialized() && isTTY() {
+			if _, err := setup.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "kern: setup: %v\n", err)
+				fmt.Fprintf(os.Stderr, "kern: continuing without setup; run `kern init` to create a starter config\n")
+			}
 		}
+
+		workdir := "."
+
+		// Non-interactive mode: kern "prompt text" → run the prompt and exit.
+		// Interactive mode: kern → start TUI.
+		if len(args) > 0 && !flagMini && flagSession == "" && !flagContinue && !flagFork {
+			prompt := strings.Join(args, " ")
+			rt, err := newRuntime(workdir, runtimeOptions{
+				sessionID:    flagSession,
+				continueLast: flagContinue,
+				fork:         flagFork,
+				interactive:  false,
+			})
+			if err != nil {
+				return err
+			}
+			defer rt.save()
+			if err := rt.agent.Run(context.Background(), rt.runInput(prompt)); err != nil {
+				return err
+			}
+			rt.sync()
+			rt.console.Dim("session %s · %s/%s", rt.sess.ID, rt.providerID, rt.modelID)
+			return nil
+		}
+
 		if isTTY() && !flagMini {
 			return runTUI(workdir)
 		}
@@ -954,44 +983,18 @@ var completionCmd = &cobra.Command{
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Create a starter kern.json in the current directory",
+	Short: "Run the first-launch wizard (theme, provider, API key, model)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path := filepath.Join(cwd(), "kern.json")
-		if util.Exists(path) {
-			return fmt.Errorf("%s already exists", path)
+		if setup.IsInitialized() {
+			fmt.Println("Kern is already initialized.")
+			fmt.Printf("Config:  %s\n", filepath.Join(util.KernConfigDir(), "kern.json"))
+			fmt.Println("Run `kern auth list` to check stored keys.")
+			return nil
 		}
-		content := `{
-  "model": "plusvibe/[REDACTED].5",
-  "provider": {
-    "plusvibe": {
-      "options": {
-        "baseURL": "https://api.plusvibe.com/v1",
-        "apiKey": "${PLUSVIBE_API_KEY}"
-      }
-    }
-  }
-}
-`
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			return err
+		if !isTTY() {
+			return fmt.Errorf("wizard requires an interactive terminal")
 		}
-		fmt.Printf("created %s\n", path)
-		fmt.Println("set PLUSVIBE_API_KEY in your environment or add the key under provider.plusvibe.options.apiKey")
-		// Scaffold a sample skill.
-		skillDir := filepath.Join(cwd(), ".kern", "skills")
-		if !util.Exists(skillDir) {
-			if err := os.MkdirAll(skillDir, 0o755); err == nil {
-				example := `---
-name: hello
-description: Greet the user in a friendly way
----
-You are a friendly assistant. When the user sends a message, greet them warmly and ask how you can help.
-`
-				if err := os.WriteFile(filepath.Join(skillDir, "hello.md"), []byte(example), 0o644); err == nil {
-					fmt.Printf("created %s (sample skill)\n", filepath.Join(skillDir, "hello.md"))
-				}
-			}
-		}
-		return nil
+		_, err := setup.Run()
+		return err
 	},
 }

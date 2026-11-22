@@ -14,13 +14,26 @@ func Home() string {
 	return "."
 }
 
+// KernHome is the root of all Kern state: config, auth, data, sessions.
+// It is $KERN_HOME, or ~/.kern by default.
+func KernHome() string {
+	if v := os.Getenv("KERN_HOME"); v != "" {
+		return v
+	}
+	return filepath.Join(Home(), ".kern")
+}
+
 // KernConfigDir is where Kern's own configuration lives.
 // It mirrors opencode's ~/.config layout on every platform.
+// KERN_HOME/config wins over ~/.config/kern.
 func KernConfigDir() string {
 	if v := os.Getenv("KERN_CONFIG_DIR"); v != "" {
 		return v
 	}
-	return filepath.Join(Home(), ".config", "kern")
+	if v := os.Getenv("KERN_HOME"); v != "" {
+		return filepath.Join(v, "config")
+	}
+	return filepath.Join(KernHome(), "config")
 }
 
 // OpencodeConfigDir is the global opencode configuration directory.
@@ -32,9 +45,13 @@ func OpencodeConfigDir() string {
 }
 
 // KernDataDir is where sessions and caches are stored.
+// KERN_HOME/data wins over platform-specific locations.
 func KernDataDir() string {
 	if v := os.Getenv("KERN_DATA_DIR"); v != "" {
 		return v
+	}
+	if v := os.Getenv("KERN_HOME"); v != "" {
+		return filepath.Join(v, "data")
 	}
 	switch runtime.GOOS {
 	case "windows":
