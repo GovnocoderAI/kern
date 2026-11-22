@@ -1,0 +1,932 @@
+// Package cli wires the command line surface.
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/mattn/go-isatty"
+	"github.com/spf13/cobra"
+
+	"github.com/kern-ai/kern/internal/agent"
+	"github.com/kern-ai/kern/internal/config"
+	"github.com/kern-ai/kern/internal/permission"
+	"github.com/kern-ai/kern/internal/provider"
+	"github.com/kern-ai/kern/internal/session"
+	"github.com/kern-ai/kern/internal/tools"
+	"github.com/kern-ai/kern/internal/ui"
+	"github.com/kern-ai/kern/internal/util"
+	"github.com/kern-ai/kern/internal/version"
+)
+
+var (
+	flagModel     string
+	flagAgent     string
+	flagAuto      bool
+	flagPrintLogs bool
+	flagLogLevel  string
+	flagPure      bool
+
+	flagContinue    bool
+	flagSession     string
+	flagFork        bool
+	flagPrompt      string
+	flagMini        bool
+	flagNoReplay    bool
+	flagReplayLimit int
+	flagPort        int
+	flagHostname    string
+	flagMDNS        bool
+	flagMDNSDomain  string
+	flagCORS        []string
+)
+
+var rootCmd = &cobra.Command{
+	Use:           "kern [project]",
+	Short:         "Kern — the core of your terminal",
+	Long:          "Kern is a fast, open-source coding agent for the terminal.\nIt is a drop-in companion for opencode configuration files.",
+	Version:       version.String(),
+	Args:          cobra.MaximumNArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		workdir := "."
+		if len(args) == 1 {
+			workdir = args[0]
+		}
+		return runInteractive(workdir)
+	},
+}
+
+// Execute runs the root command.
+func Execute() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "kern: "+err.Error())
+		os.Exit(1)
+	}
+}
+
+func init() {
+	pf := rootCmd.PersistentFlags()
+	pf.StringVarP(&flagModel, "model", "m", "", "model to use (provider/model)")
+	pf.StringVar(&flagAgent, "agent", "", "agent to use")
+	pf.BoolVar(&flagAuto, "auto", false, "auto-approve permissions that are not explicitly denied")
+	pf.BoolVar(&flagPrintLogs, "print-logs", false, "print logs to stderr")
+	pf.StringVar(&flagLogLevel, "log-level", "", "log level (DEBUG, INFO, WARN, ERROR)")
+	pf.BoolVar(&flagPure, "pure", false, "run without external plugins")
+	pf.BoolVarP(&flagContinue, "continue", "c", false, "continue the last session")
+	pf.StringVarP(&flagSession, "session", "s", "", "session id to continue")
+	pf.BoolVar(&flagFork, "fork", false, "fork the session when continuing")
+	pf.StringVar(&flagPrompt, "prompt", "", "prompt to use")
+	pf.BoolVar(&flagMini, "mini", false, "start the minimal interface")
+	pf.BoolVar(&flagNoReplay, "no-replay", false, "disable replay on resume")
+	pf.IntVar(&flagReplayLimit, "replay-limit", 0, "cap replayed messages")
+	pf.IntVar(&flagPort, "port", 0, "port to listen on")
+	pf.StringVar(&flagHostname, "hostname", "127.0.0.1", "hostname to listen on")
+	pf.BoolVar(&flagMDNS, "mdns", false, "enable mDNS service discovery")
+	pf.StringVar(&flagMDNSDomain, "mdns-domain", "kern.local", "mDNS domain")
+	pf.StringArrayVar(&flagCORS, "cors", nil, "additional CORS origins")
+
+	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, miniCmd, statsCmd, agentCmd)
+}
+
+func isTTY() bool {
+	return isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
+}
+
+func cwd() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return dir
+}
+
+// ---- runtime ----
+
+type runtimeOptions struct {
+	model        string
+	sessionID    string
+	continueLast bool
+	fork         bool
+	interactive  bool
+	auto         bool
+}
+
+type app struct {
+	cfg        *config.Config
+	auth       *config.Auth
+	agent      *agent.Agent
+	sess       *session.Session
+	store      *session.Store
+	console    *ui.Console
+	providerID string
+	modelID    string
+	workdir    string
+}
+
+func newRuntime(workdir string, opts runtimeOptions) (*app, error) {
+	abs, err := filepath.Abs(workdir)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.Load(abs)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	auth := config.LoadAuth()
+	store := session.NewStore()
+
+	var sess *session.Session
+	switch {
+	case opts.sessionID != "":
+		sess, err = store.Load(opts.sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("session %s: %w", opts.sessionID, err)
+		}
+	case opts.continueLast:
+		sess, err = store.Latest(abs)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
+			sess = session.New(abs, "")
+		}
+	default:
+		sess = session.New(abs, "")
+	}
+	if opts.fork && opts.sessionID != "" {
+		forked := session.New(abs, "")
+		forked.Messages = append([]provider.Message(nil), sess.Messages...)
+		forked.Title = sess.Title + " (fork)"
+		sess = forked
+	}
+
+	modelRef := opts.model
+	if modelRef == "" {
+		modelRef = flagModel
+	}
+	if modelRef == "" && sess.Model != "" && (opts.continueLast || opts.sessionID != "") {
+		modelRef = sess.Model
+	}
+	pid, mid, err := cfg.ResolveModel(modelRef)
+	if err != nil {
+		return nil, err
+	}
+	p := cfg.Providers[pid]
+	prov, err := buildProvider(pid, p, cfg.APIKey(pid, auth))
+	if err != nil {
+		return nil, err
+	}
+
+	console := ui.New()
+	var promptFn permission.PromptFunc
+	if opts.interactive {
+		promptFn = func(action, resource string) (bool, error) {
+			return console.Ask(fmt.Sprintf("permission: %s %s", action, resource))
+		}
+	}
+	perms := permission.New(cfg.Permissions, opts.auto || flagAuto, promptFn)
+	registry := tools.NewRegistry(abs, cfg.Shell)
+	system := agent.BuildSystemPrompt(abs, cfg.Instructions)
+	ag := agent.New(prov, pid, mid, system, registry, perms, console)
+	ag.History = sess.Messages
+	ag.Usage = sess.Usage
+
+	sess.Model = pid + "/" + mid
+	sess.Workdir = abs
+
+	return &app{
+		cfg:        cfg,
+		auth:       auth,
+		agent:      ag,
+		sess:       sess,
+		store:      store,
+		console:    console,
+		providerID: pid,
+		modelID:    mid,
+		workdir:    abs,
+	}, nil
+}
+
+func buildProvider(pid string, p *config.Provider, key string) (provider.Provider, error) {
+	if p == nil {
+		return nil, fmt.Errorf("provider %q is not configured", pid)
+	}
+	switch p.Kind() {
+	case "openai":
+		return &provider.OpenAI{
+			ProviderID: pid,
+			BaseURL:    p.Endpoint(),
+			APIKey:     key,
+			Headers:    p.Headers(),
+		}, nil
+	case "anthropic":
+		return &provider.Anthropic{
+			ProviderID: pid,
+			BaseURL:    p.Endpoint(),
+			APIKey:     key,
+			Headers:    p.Headers(),
+		}, nil
+	case "google":
+		return nil, fmt.Errorf("provider %q: Google Gemini is not implemented yet", pid)
+	default:
+		return nil, fmt.Errorf("provider %q: unsupported kind %q", pid, p.Kind())
+	}
+}
+
+func (r *app) sync() {
+	r.sess.Messages = r.agent.History
+	r.sess.Usage = r.agent.Usage
+	r.sess.UpdatedAt = time.Now()
+}
+
+func (r *app) save() {
+	r.sync()
+	if err := r.store.Save(r.sess); err != nil {
+		r.console.Warn("could not save session: %v", err)
+	}
+}
+
+func (r *app) rebuildModel(ref string) error {
+	pid, mid, err := r.cfg.ResolveModel(ref)
+	if err != nil {
+		return err
+	}
+	prov, err := buildProvider(pid, r.cfg.Providers[pid], r.cfg.APIKey(pid, r.auth))
+	if err != nil {
+		return err
+	}
+	r.agent.Provider = prov
+	r.agent.ProviderID = pid
+	r.agent.Model = mid
+	r.providerID = pid
+	r.modelID = mid
+	r.sess.Model = pid + "/" + mid
+	return nil
+}
+
+// ---- interactive ----
+
+func runInteractive(workdirArg string) error {
+	workdir := workdirArg
+	if workdir == "" {
+		workdir = "."
+	}
+	abs, err := filepath.Abs(workdir)
+	if err != nil {
+		return err
+	}
+	rt, err := newRuntime(abs, runtimeOptions{
+		sessionID:    flagSession,
+		continueLast: flagContinue,
+		fork:         flagFork,
+		interactive:  isTTY(),
+	})
+	if err != nil {
+		return err
+	}
+	defer rt.save()
+
+	c := rt.console
+	c.Banner(version.Version, rt.providerID+"/"+rt.modelID, abs)
+	c.Dim("Type /help for commands, /exit to quit. Use /model to switch models.")
+	c.Println("")
+
+	for {
+		line, err := c.Prompt("❯ ")
+		if errors.Is(err, io.EOF) {
+			c.Println("")
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "/") {
+			if rt.handleSlash(line) {
+				return nil
+			}
+			continue
+		}
+		if err := rt.agent.Run(context.Background(), line); err != nil {
+			c.Error("%v", err)
+		}
+		rt.sync()
+		if err := rt.store.Save(rt.sess); err != nil {
+			c.Warn("session: %v", err)
+		}
+		c.Println("")
+	}
+}
+
+func (r *app) handleSlash(line string) bool {
+	fields := strings.Fields(line)
+	cmd := strings.ToLower(fields[0])
+	arg := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
+	switch cmd {
+	case "/exit", "/quit", "/q":
+		return true
+	case "/help":
+		r.console.Println(helpText)
+	case "/clear":
+		r.agent.Reset()
+		r.sess.Messages = nil
+		r.sess.Usage = provider.Usage{}
+		r.console.Success("conversation cleared")
+	case "/model":
+		if arg == "" {
+			r.console.Info("model: %s/%s", r.providerID, r.modelID)
+			break
+		}
+		if err := r.rebuildModel(arg); err != nil {
+			r.console.Error("%v", err)
+			break
+		}
+		r.console.Success("model: %s/%s", r.providerID, r.modelID)
+	case "/models":
+		r.printModels()
+	case "/tools":
+		r.console.Println(strings.Join(r.agent.Tools.Names(), ", "))
+	case "/session":
+		r.console.Info("%s  %s  %s", r.sess.ID, r.sess.Title, r.sess.Model)
+	case "/cost":
+		u := r.agent.Usage
+		r.console.Info("tokens: in %d, out %d, total %d", u.InputTokens, u.OutputTokens, u.TotalTokens)
+	default:
+		r.console.Warn("unknown command %s; try /help", cmd)
+	}
+	return false
+}
+
+func (r *app) printModels() {
+	for _, pid := range r.cfg.ProviderIDs() {
+		p := r.cfg.Providers[pid]
+		marker := " "
+		if pid == r.providerID {
+			marker = "*"
+		}
+		r.console.Println(fmt.Sprintf("%s %s (%s)", marker, pid, p.Kind()))
+		for _, mid := range p.SortedModels() {
+			r.console.Println("    " + pid + "/" + mid)
+		}
+	}
+}
+
+const helpText = `Commands:
+  /help              show this help
+  /model [ref]       show or switch model (provider/model)
+  /models            list configured models
+  /tools             list available tools
+  /session           show current session
+  /cost              show token usage
+  /clear             clear the conversation
+  /exit              quit
+
+Tips:
+  - Kern reads opencode.json/opencode.jsonc and kern.json automatically.
+  - Use --auto to auto-approve tool permissions.
+  - Run "kern run \"prompt\"" for non-interactive use.`
+
+// ---- run ----
+
+var runCmd = &cobra.Command{
+	Use:   "run [message..]",
+	Short: "Run a single prompt non-interactively",
+	Args:  cobra.ArbitraryArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		prompt := strings.TrimSpace(strings.Join(args, " "))
+		if prompt == "" {
+			prompt = flagPrompt
+		}
+		if prompt == "" {
+			return errors.New("no prompt provided")
+		}
+		rt, err := newRuntime(cwd(), runtimeOptions{
+			sessionID:    flagSession,
+			continueLast: flagContinue,
+			fork:         flagFork,
+			interactive:  isTTY(),
+		})
+		if err != nil {
+			return err
+		}
+		defer rt.save()
+		if err := rt.agent.Run(context.Background(), prompt); err != nil {
+			return err
+		}
+		rt.sync()
+		rt.console.Dim("session %s · %s/%s", rt.sess.ID, rt.providerID, rt.modelID)
+		return nil
+	},
+}
+
+// ---- models ----
+
+var modelsRemote bool
+
+var modelsCmd = &cobra.Command{
+	Use:   "models [provider]",
+	Short: "List available models",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load(cwd())
+		if err != nil {
+			return err
+		}
+		auth := config.LoadAuth()
+		filter := ""
+		if len(args) == 1 {
+			filter = args[0]
+		}
+		if len(cfg.Providers) == 0 {
+			fmt.Println("no providers configured")
+			return nil
+		}
+		for _, pid := range cfg.ProviderIDs() {
+			if filter != "" && pid != filter {
+				continue
+			}
+			p := cfg.Providers[pid]
+			fmt.Printf("%s (%s) %s\n", pid, p.Kind(), p.Endpoint())
+			local := p.SortedModels()
+			if modelsRemote || len(local) == 0 {
+				prov, err := buildProvider(pid, p, cfg.APIKey(pid, auth))
+				if err == nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					remote, rerr := prov.Models(ctx)
+					cancel()
+					if rerr == nil {
+						for _, m := range remote {
+							fmt.Printf("  %s/%s\n", pid, m.ID)
+						}
+						continue
+					}
+					if len(local) == 0 {
+						fmt.Printf("  (could not fetch models: %v)\n", rerr)
+					}
+				}
+			}
+			for _, mid := range local {
+				fmt.Printf("  %s/%s\n", pid, mid)
+			}
+		}
+		return nil
+	},
+}
+
+func init() {
+	modelsCmd.Flags().BoolVar(&modelsRemote, "remote", false, "fetch models from provider APIs")
+}
+
+// ---- config ----
+
+var configCmd = &cobra.Command{
+	Use:   "config",
+	Short: "Inspect and validate configuration",
+}
+
+var configPathCmd = &cobra.Command{
+	Use:   "path",
+	Short: "Print configuration locations and loaded sources",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Printf("kern config:     %s\n", util.KernConfigDir())
+		fmt.Printf("opencode config: %s\n", util.OpencodeConfigDir())
+		fmt.Printf("kern data:       %s\n", util.KernDataDir())
+		fmt.Printf("sessions:        %s\n", util.SessionsDir())
+		cfg, err := config.Load(cwd())
+		if err != nil {
+			return err
+		}
+		fmt.Println("sources:")
+		if len(cfg.Sources) == 0 {
+			fmt.Println("  (none)")
+		}
+		for _, s := range cfg.Sources {
+			fmt.Println("  " + s)
+		}
+		return nil
+	},
+}
+
+var configShowCmd = &cobra.Command{
+	Use:   "show",
+	Short: "Print the resolved configuration with secrets masked",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load(cwd())
+		if err != nil {
+			return err
+		}
+		raw, err := json.MarshalIndent(cfg.Redacted(), "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(raw))
+		return nil
+	},
+}
+
+var configValidateCmd = &cobra.Command{
+	Use:   "validate",
+	Short: "Validate configuration and the default model",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load(cwd())
+		if err != nil {
+			return err
+		}
+		fmt.Printf("config: ok (%d file(s))\n", len(cfg.Sources))
+		pid, mid, err := cfg.ResolveModel(flagModel)
+		if err != nil {
+			fmt.Printf("model:  %v\n", err)
+			return nil
+		}
+		fmt.Printf("model:  %s/%s\n", pid, mid)
+		return nil
+	},
+}
+
+func init() {
+	configCmd.AddCommand(configPathCmd, configShowCmd, configValidateCmd)
+}
+
+// ---- doctor ----
+
+var doctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Check the environment, configuration and providers",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println("Kern doctor")
+		fmt.Println("===========")
+		fmt.Printf("version:  %s\n", version.String())
+		fmt.Printf("platform: %s/%s\n", osName(), osArch())
+		fmt.Printf("workdir:  %s\n", cwd())
+		fmt.Printf("terminal: %s\n", boolText(isTTY(), "interactive", "non-interactive"))
+
+		cfg, err := config.Load(cwd())
+		if err != nil {
+			fmt.Printf("config:   error: %v\n", err)
+			return nil
+		}
+		fmt.Printf("config:   ok (%d source(s))\n", len(cfg.Sources))
+		for _, s := range cfg.Sources {
+			fmt.Println("          " + s)
+		}
+
+		auth := config.LoadAuth()
+		if len(cfg.Providers) == 0 {
+			fmt.Println("providers: none configured")
+		}
+		for _, pid := range cfg.ProviderIDs() {
+			p := cfg.Providers[pid]
+			key := cfg.APIKey(pid, auth)
+			fmt.Printf("provider: %s (%s)\n", pid, p.Kind())
+			fmt.Printf("          endpoint %s\n", p.Endpoint())
+			fmt.Printf("          key      %s\n", boolText(key != "", "present", "missing"))
+			fmt.Printf("          models   %d configured\n", len(p.Models))
+		}
+		if pid, mid, err := cfg.ResolveModel(flagModel); err == nil {
+			fmt.Printf("model:    %s/%s\n", pid, mid)
+		} else {
+			fmt.Printf("model:    %v\n", err)
+		}
+		if path, err := exec.LookPath("git"); err == nil {
+			fmt.Printf("git:      %s\n", path)
+		} else {
+			fmt.Println("git:      not found")
+		}
+		fmt.Printf("tools:    %d built in\n", len(tools.NewRegistry(cwd(), "").Names()))
+		return nil
+	},
+}
+
+func osName() string { return runtime.GOOS }
+func osArch() string { return runtime.GOARCH }
+
+func boolText(ok bool, yes, no string) string {
+	if ok {
+		return yes
+	}
+	return no
+}
+
+// ---- auth ----
+
+var authCmd = &cobra.Command{
+	Use:     "auth",
+	Aliases: []string{"providers"},
+	Short:   "Manage provider credentials",
+}
+
+var authSetCmd = &cobra.Command{
+	Use:   "set <provider> <key>",
+	Short: "Store a provider API key (use - to read from stdin)",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		providerID, key := args[0], args[1]
+		if key == "-" {
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return err
+			}
+			key = strings.TrimSpace(string(data))
+		}
+		if key == "" {
+			return errors.New("empty key")
+		}
+		if err := config.SetKey(providerID, key); err != nil {
+			return err
+		}
+		fmt.Printf("stored key for %s\n", providerID)
+		return nil
+	},
+}
+
+var authListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List providers with stored keys",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		a := config.LoadAuth()
+		ids := a.List()
+		if len(ids) == 0 {
+			fmt.Println("no stored credentials")
+			return nil
+		}
+		for _, id := range ids {
+			fmt.Println(id)
+		}
+		return nil
+	},
+}
+
+var authRemoveCmd = &cobra.Command{
+	Use:   "remove <provider>",
+	Short: "Remove a stored provider key",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := config.RemoveKey(args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("removed key for %s\n", args[0])
+		return nil
+	},
+}
+
+func init() {
+	authCmd.AddCommand(authSetCmd, authListCmd, authRemoveCmd)
+}
+
+// ---- session ----
+
+var sessionCmd = &cobra.Command{
+	Use:   "session",
+	Short: "Manage saved sessions",
+}
+
+var sessionListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List sessions",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		store := session.NewStore()
+		list, err := store.List()
+		if err != nil {
+			return err
+		}
+		if len(list) == 0 {
+			fmt.Println("no sessions")
+			return nil
+		}
+		for _, s := range list {
+			fmt.Printf("%s  %s  %s  %s\n", s.ID, s.UpdatedAt.Format("2006-01-02 15:04"), s.Model, s.Title)
+		}
+		return nil
+	},
+}
+
+var sessionShowCmd = &cobra.Command{
+	Use:   "show <id>",
+	Short: "Show a session transcript",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		store := session.NewStore()
+		s, err := store.Load(args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s  %s\n%s\n\n", s.ID, s.Title, s.Model)
+		for _, m := range s.Messages {
+			fmt.Printf("[%s] %s\n", m.Role, m.Text())
+			for _, p := range m.Parts {
+				if p.Type == provider.PartToolCall && p.ToolCall != nil {
+					fmt.Printf("  -> %s %s\n", p.ToolCall.Name, string(p.ToolCall.Arguments))
+				}
+				if p.Type == provider.PartToolResult && p.ToolResult != nil {
+					fmt.Printf("  <- %s: %s\n", p.ToolResult.Name, preview(p.ToolResult.Content, 200))
+				}
+			}
+		}
+		fmt.Printf("\ntokens: in %d, out %d, total %d\n", s.Usage.InputTokens, s.Usage.OutputTokens, s.Usage.TotalTokens)
+		return nil
+	},
+}
+
+var sessionDeleteCmd = &cobra.Command{
+	Use:   "delete <id>",
+	Short: "Delete a session",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return session.NewStore().Delete(args[0])
+	},
+}
+
+var sessionExportCmd = &cobra.Command{
+	Use:   "export <id> [file]",
+	Short: "Export a session as JSON",
+	Args:  cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		s, err := session.NewStore().Load(args[0])
+		if err != nil {
+			return err
+		}
+		raw, err := json.MarshalIndent(s, "", "  ")
+		if err != nil {
+			return err
+		}
+		if len(args) == 2 {
+			return os.WriteFile(args[1], raw, 0o644)
+		}
+		fmt.Println(string(raw))
+		return nil
+	},
+}
+
+var sessionImportCmd = &cobra.Command{
+	Use:   "import <file>",
+	Short: "Import a session from JSON",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		raw, err := os.ReadFile(args[0])
+		if err != nil {
+			return err
+		}
+		var s session.Session
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return err
+		}
+		if s.ID == "" {
+			return errors.New("session JSON has no id")
+		}
+		if err := session.NewStore().Save(&s); err != nil {
+			return err
+		}
+		fmt.Printf("imported %s\n", s.ID)
+		return nil
+	},
+}
+
+func init() {
+	sessionCmd.AddCommand(sessionListCmd, sessionShowCmd, sessionDeleteCmd, sessionExportCmd, sessionImportCmd)
+}
+
+func preview(s string, n int) string {
+	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
+// ---- mini / stats / agent ----
+
+var miniCmd = &cobra.Command{
+	Use:   "mini [project]",
+	Short: "Start the minimal interactive interface",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		workdir := "."
+		if len(args) == 1 {
+			workdir = args[0]
+		}
+		return runInteractive(workdir)
+	},
+}
+
+var statsCmd = &cobra.Command{
+	Use:   "stats",
+	Short: "Show token usage and session statistics",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		list, err := session.NewStore().List()
+		if err != nil {
+			return err
+		}
+		var in, out, total int
+		byModel := map[string]int{}
+		for _, s := range list {
+			in += s.Usage.InputTokens
+			out += s.Usage.OutputTokens
+			total += s.Usage.TotalTokens
+			byModel[s.Model]++
+		}
+		fmt.Printf("sessions: %d\n", len(list))
+		fmt.Printf("tokens:   in %d, out %d, total %d\n", in, out, total)
+		if len(byModel) > 0 {
+			fmt.Println("sessions by model:")
+			models := make([]string, 0, len(byModel))
+			for m := range byModel {
+				models = append(models, m)
+			}
+			sort.Strings(models)
+			for _, m := range models {
+				fmt.Printf("  %-40s %d\n", m, byModel[m])
+			}
+		}
+		return nil
+	},
+}
+
+var agentCmd = &cobra.Command{
+	Use:   "agent",
+	Short: "List configured agents",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load(cwd())
+		if err != nil {
+			return err
+		}
+		if len(cfg.Agents) == 0 {
+			fmt.Println("no custom agents configured (built-in: build)")
+			return nil
+		}
+		ids := make([]string, 0, len(cfg.Agents))
+		for id := range cfg.Agents {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			a := cfg.Agents[id]
+			fmt.Printf("%s  model=%s mode=%s  %s\n", id, a.Model, a.Mode, a.Description)
+		}
+		return nil
+	},
+}
+
+// ---- version / completion / init ----
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print version information",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("kern " + version.String())
+	},
+}
+
+var completionCmd = &cobra.Command{
+	Use:       "completion [bash|zsh|fish|powershell]",
+	Short:     "Generate a shell completion script",
+	Args:      cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+	ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		switch args[0] {
+		case "bash":
+			return rootCmd.GenBashCompletion(os.Stdout)
+		case "zsh":
+			return rootCmd.GenZshCompletion(os.Stdout)
+		case "fish":
+			return rootCmd.GenFishCompletion(os.Stdout, true)
+		case "powershell":
+			return rootCmd.GenPowerShellCompletionWithDesc(os.Stdout)
+		}
+		return nil
+	},
+}
+
+var initCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Create a starter kern.json in the current directory",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path := filepath.Join(cwd(), "kern.json")
+		if util.Exists(path) {
+			return fmt.Errorf("%s already exists", path)
+		}
+		content := `{
+  "model": "openai/gpt-4o"
+}
+`
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("created %s\n", path)
+		return nil
+	},
+}

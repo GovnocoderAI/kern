@@ -1,0 +1,87 @@
+package util
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+)
+
+// Home returns the current user's home directory.
+func Home() string {
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		return h
+	}
+	return "."
+}
+
+// KernConfigDir is where Kern's own configuration lives.
+// It mirrors opencode's ~/.config layout on every platform.
+func KernConfigDir() string {
+	if v := os.Getenv("KERN_CONFIG_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join(Home(), ".config", "kern")
+}
+
+// OpencodeConfigDir is the global opencode configuration directory.
+func OpencodeConfigDir() string {
+	if v := os.Getenv("OPENCODE_CONFIG_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join(Home(), ".config", "opencode")
+}
+
+// KernDataDir is where sessions and caches are stored.
+func KernDataDir() string {
+	if v := os.Getenv("KERN_DATA_DIR"); v != "" {
+		return v
+	}
+	switch runtime.GOOS {
+	case "windows":
+		if v := os.Getenv("LOCALAPPDATA"); v != "" {
+			return filepath.Join(v, "kern")
+		}
+	case "darwin":
+		return filepath.Join(Home(), "Library", "Application Support", "kern")
+	}
+	return filepath.Join(Home(), ".local", "share", "kern")
+}
+
+// OpencodeDataDir is opencode's data directory, used for auth drop-in.
+func OpencodeDataDir() string {
+	if v := os.Getenv("OPENCODE_DATA_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join(Home(), ".local", "share", "opencode")
+}
+
+// SessionsDir is the directory holding persisted sessions.
+func SessionsDir() string {
+	return filepath.Join(KernDataDir(), "sessions")
+}
+
+// SystemConfigDir is the machine-wide configuration directory.
+func SystemConfigDir() string {
+	if runtime.GOOS == "windows" {
+		if v := os.Getenv("ProgramData"); v != "" {
+			return filepath.Join(v, "kern")
+		}
+	}
+	return "/etc/kern"
+}
+
+// SystemOpencodeConfigDir is the machine-wide opencode configuration directory.
+func SystemOpencodeConfigDir() string {
+	if runtime.GOOS == "windows" {
+		if v := os.Getenv("ProgramData"); v != "" {
+			return filepath.Join(v, "opencode")
+		}
+	}
+	return "/etc/opencode"
+}
+
+// Exists reports whether a path exists.
+func Exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}

@@ -1,0 +1,31 @@
+# Build output
+/bin/
+/dist/
+/kern
+/kern.exe
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+go.work
+go.work.sum
+
+# Local config and secrets
+.env
+.env.*
+*.local.json
+auth.json
+service.json
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Tooling caches
+/.cache/
+coverage.txt
