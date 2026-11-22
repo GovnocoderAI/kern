@@ -65,7 +65,7 @@ func LoadProject(workdir string) []Skill {
 	return LoadDir(filepath.Join(workdir, ".kern", "skills"))
 }
 
-// LoadGlobal reads skills from ~/.config/kern/skills/.
+// LoadGlobal reads skills from ~/.config/kern/skills/ (or $KERN_CONFIG_DIR/skills/).
 func LoadGlobal() []Skill {
 	return LoadDir(filepath.Join(util.KernConfigDir(), "skills"))
 }
@@ -111,18 +111,22 @@ func Validate(skills []Skill) []string {
 	return problems
 }
 
-var frontmatterRe = regexp.MustCompile(`(?s)^---\s*\n(.*?)\n---\s*\n`)
+var frontmatterRe = regexp.MustCompile(`(?s)^---\n(.*?)\n---`)
 
 // Parse parses a skill markdown file with frontmatter. The body is everything
 // after the frontmatter block.
 func Parse(raw string) (Skill, error) {
-	loc := frontmatterRe.FindStringSubmatchIndex(raw)
+	// Strip UTF-8 BOM if present (Windows text files often have one).
+	raw = strings.TrimPrefix(raw, "\uFEFF")
+	// Normalize CRLF to LF so the frontmatter regex works consistently.
+	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	loc := frontmatterRe.FindStringSubmatchIndex(normalized)
 	if loc == nil {
 		return Skill{}, fmt.Errorf("skill has no frontmatter (missing name/description block)")
 	}
 	var s Skill
-	s.Name, s.Description, s.Model = parseFMBlock(raw[loc[2]:loc[3]])
-	s.Prompt = strings.TrimSpace(raw[loc[1]:])
+	s.Name, s.Description, s.Model = parseFMBlock(normalized[loc[2]:loc[3]])
+	s.Prompt = strings.TrimSpace(normalized[loc[1]:])
 	if s.Name == "" {
 		return s, fmt.Errorf("skill frontmatter is missing a name")
 	}
