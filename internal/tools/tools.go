@@ -295,6 +295,25 @@ func resolve(workdir, p string) (string, error) {
 			}
 			ancestor = parent
 		}
+	} else {
+		// Path does not exist (NotExist). The last component may be a
+		// symlink to a directory outside the workspace. Check the
+		// parent's resolved path, and if the last component is a symlink,
+		// resolve it too.
+		if parent, aErr := filepath.EvalSymlinks(filepath.Dir(abs)); aErr == nil {
+			realRoot, rootErr := filepath.EvalSymlinks(root)
+			if rootErr == nil {
+				last := filepath.Base(abs)
+				linkPath := filepath.Join(parent, last)
+				if realLink, lErr := filepath.EvalSymlinks(linkPath); lErr == nil {
+					if realRel, relErr := filepath.Rel(realRoot, realLink); relErr == nil {
+						if realRel == ".." || strings.HasPrefix(realRel, ".."+string(os.PathSeparator)) {
+							return "", fmt.Errorf("path %q escapes the workspace via symlink", p)
+						}
+					}
+				}
+			}
+		}
 	}
 	return abs, nil
 }

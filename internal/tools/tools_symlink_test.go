@@ -27,7 +27,8 @@ func TestSymlinkEscape(t *testing.T) {
 	ctx := context.Background()
 
 	// Writing through the symlink to a new file outside must be rejected.
-	_, err := r.Run(ctx, "write", json.RawMessage(`{"path":"link/evil.txt","content":"x"}`))
+	out, err := r.Run(ctx, "write", json.RawMessage(`{"path":"link/evil.txt","content":"x"}`))
+	t.Logf("write through symlink: out=%q err=%v", out, err)
 	if err == nil {
 		t.Fatal("write through symlink pointing outside should fail")
 	}
@@ -38,7 +39,8 @@ func TestSymlinkEscape(t *testing.T) {
 	if werr := os.WriteFile(target, []byte("top secret\n"), 0o644); werr != nil {
 		t.Fatal(werr)
 	}
-	_, err = r.Run(ctx, "read", json.RawMessage(`{"path":"link/secret.txt"}`))
+	out, err = r.Run(ctx, "read", json.RawMessage(`{"path":"link/secret.txt"}`))
+	t.Logf("read through symlink: out=%q err=%v", out, err)
 	if err == nil {
 		t.Fatal("read through symlink pointing outside should fail")
 	}
@@ -48,7 +50,7 @@ func TestSymlinkEscape(t *testing.T) {
 	if werr := os.WriteFile(inner, []byte("fine\n"), 0o644); werr != nil {
 		t.Fatal(werr)
 	}
-	out, err := r.Run(ctx, "read", json.RawMessage(`{"path":"ok.txt"}`))
+	out, err = r.Run(ctx, "read", json.RawMessage(`{"path":"ok.txt"}`))
 	if err != nil {
 		t.Fatalf("read of an in-workspace file: %v", err)
 	}
