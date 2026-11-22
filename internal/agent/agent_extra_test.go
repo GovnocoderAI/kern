@@ -17,9 +17,9 @@ import (
 // flakyProvider fails the first stream with an error, succeeds on the second.
 // It models a transient 429 that the retry middleware would recover from.
 type flakyProvider struct {
-	mu      sync.Mutex
-	calls   int
-	tool    provider.ToolCall
+	mu       sync.Mutex
+	calls    int
+	tool     provider.ToolCall
 	firstErr error
 }
 

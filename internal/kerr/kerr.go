@@ -98,7 +98,9 @@ func Provider(format string, args ...any) *Error { return Newf(CodeProvider, for
 func Permission(format string, args ...any) *Error { return Newf(CodePermission, format, args...) }
 
 // Cancelled marks a clean interruption.
-func Cancelled() *Error { return &Error{Code: CodeCancelled, Message: "canceled", Err: contextCancelled} }
+func Cancelled() *Error {
+	return &Error{Code: CodeCancelled, Message: "canceled", Err: contextCancelled}
+}
 
 // IsCancelled reports whether err represents a clean cancellation.
 func IsCancelled(err error) bool {

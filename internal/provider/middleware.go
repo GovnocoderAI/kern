@@ -98,7 +98,7 @@ func Retry(p RetryPolicy) Middleware {
 }
 
 type retryProvider struct {
-	next  Provider
+	next   Provider
 	policy RetryPolicy
 	extra  map[int]bool
 }

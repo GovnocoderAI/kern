@@ -42,6 +42,6 @@ func FromConfig(providerID string, p *config.Provider, apiKey string) (Provider,
 	}
 	return Apply(base,
 		Retry(RetryPolicy{MaxAttempts: 4, Initial: 500 * ms, Max: 20 * sec}),
-		Timeout(90 * sec),
+		Timeout(90*sec),
 	), nil
 }
