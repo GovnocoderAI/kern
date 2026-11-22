@@ -109,17 +109,18 @@ type runtimeOptions struct {
 }
 
 type app struct {
-	core       *appcore.App
-	cfg        *config.Config
-	auth       *config.Auth
-	agent      *agent.Agent
-	sess       *session.Session
-	store      *session.Store
-	console    *ui.Console
-	providerID string
-	modelID    string
-	workdir    string
-	skills     []skill.Skill
+	core        *appcore.App
+	cfg         *config.Config
+	auth        *config.Auth
+	agent       *agent.Agent
+	sess        *session.Session
+	store       *session.Store
+	console     *ui.Console
+	providerID  string
+	modelID     string
+	workdir     string
+	skills      []skill.Skill
+	activeSkill *skill.Skill
 }
 
 // resolveSkill returns the active skill for the current run, or nil.
@@ -166,6 +167,18 @@ func newRuntime(workdir string, opts runtimeOptions) (*app, error) {
 		workdir:    core.Workdir,
 	}
 	rt.skills = skill.Load(rt.workdir)
+	// Pre-set activeSkill from the --skill flag if provided.
+	if flagSkill != "" {
+		for i := range rt.skills {
+			if rt.skills[i].Name == flagSkill {
+				rt.activeSkill = &rt.skills[i]
+				break
+			}
+		}
+		if rt.activeSkill == nil {
+			rt.console.Warn("skill %q not found; see `kern skill list`", flagSkill)
+		}
+	}
 	return rt, nil
 }
 
@@ -191,12 +204,12 @@ func (r *app) rebuildModel(ref string) error {
 }
 
 // runSkillInput returns the RunInput for the given user text, attaching the
-// active skill (from --skill) to the system prompt.
+// active skill (from --skill flag or /skill command) to the system prompt.
 func (r *app) runInput(text string) agent.RunInput {
 	in := agent.RunInput{Text: text}
-	if sk := r.resolveSkill(); sk != nil {
-		in.Skill = sk.Name
-		in.SkillPrompt = sk.Prompt
+	if r.activeSkill != nil {
+		in.Skill = r.activeSkill.Name
+		in.SkillPrompt = r.activeSkill.Prompt
 	}
 	return in
 }
@@ -315,10 +328,44 @@ func (r *app) handleSlash(line string) bool {
 	case "/cost":
 		u := r.agent.Usage
 		r.console.Info("tokens: in %d, out %d, total %d", u.InputTokens, u.OutputTokens, u.TotalTokens)
+	case "/skill":
+		if arg == "" {
+			r.printSkills()
+			break
+		}
+		if arg == "off" {
+			r.activeSkill = nil
+			r.console.Success("skill off")
+			break
+		}
+		for i := range r.skills {
+			if r.skills[i].Name == arg {
+				r.activeSkill = &r.skills[i]
+				r.console.Success("skill on: %s", arg)
+				break
+			}
+		}
+		if r.activeSkill == nil {
+			r.console.Error("unknown skill %q; try /skill", arg)
+		}
 	default:
 		r.console.Warn("unknown command %s; try /help", cmd)
 	}
 	return false
+}
+
+func (r *app) printSkills() {
+	if len(r.skills) == 0 {
+		r.console.Info("no skills found (create .kern/skills/*.md)")
+		return
+	}
+	for _, s := range r.skills {
+		mark := " "
+		if r.activeSkill != nil && r.activeSkill.Name == s.Name {
+			mark = "*"
+		}
+		r.console.Println(fmt.Sprintf("%s %s — %s", mark, s.Name, s.Description))
+	}
 }
 
 func (r *app) printModels() {
@@ -342,12 +389,15 @@ const helpText = `Commands:
   /tools             list available tools
   /session           show current session
   /cost              show token usage
+  /skill [name]      list skills, or activate one by name
   /clear             clear the conversation
   /exit              quit
 
 Tips:
   - Kern reads opencode.json/opencode.jsonc and kern.json automatically.
   - Use --auto to auto-approve tool permissions.
+  - Use --skill <name> to activate a skill for this run.
+  - Create .kern/skills/*.md files to define custom skills.
   - Run "kern run \"prompt\"" for non-interactive use.`
 
 // ---- run ----

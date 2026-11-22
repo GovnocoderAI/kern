@@ -342,7 +342,7 @@ func (m *Model) mainView() string {
 }
 
 func (m *Model) tabsView() string {
-	names := []string{"Chat", "Files", "Diff", "Processes"}
+	names := []string{"Chat", "Files", "Diff", "Procs", "Skills"}
 	var parts []string
 	for i, name := range names {
 		label := fmt.Sprintf("%d %s", i+1, name)
@@ -1046,6 +1046,7 @@ var paletteItems = []string{
 	"Switch model",
 	"Refresh files",
 	"Toggle sidebar",
+	"Go to Skills",
 	"Show help",
 	"Quit",
 }
@@ -1067,8 +1068,12 @@ func (m *Model) executePalette(idx int) (tea.Model, tea.Cmd) {
 		m.showSidebar = !m.showSidebar
 		m.layout(m.width, m.height)
 	case 5:
-		m.modal = "help"
+		m.tab = tabSkills
+		m.loadSkills()
+		m.refreshDetail()
 	case 6:
+		m.modal = "help"
+	case 7:
 		return m, tea.Quit
 	}
 	return m, nil
@@ -1121,7 +1126,7 @@ func (m *Model) modalView() string {
 
 const helpBody = `Navigation
   tab / shift+tab   cycle focus: input → main → sidebar
-  1 2 3 4           Chat · Files · Diff · Processes
+  1 2 3 4 5         Chat · Files · Diff · Procs · Skills
   j / k, ↑ / ↓      move or scroll
   g / G             top / bottom
   enter             send (input) or open (files)
@@ -1130,10 +1135,23 @@ const helpBody = `Navigation
   m                 model picker
   n                 new session
   r                 refresh current panel
-  x                 kill selected process
+  x                 kill selected process (procs tab)
+  a / enter         activate skill (skills tab)
+  x                 deactivate skill (skills tab)
   ctrl+c            interrupt, then quit
 
-Files
-  The Files tab lists workspace files. Enter previews a file.
-  The Diff tab lists every file Kern wrote or edited.
-  The Processes tab lists shell commands, exit codes and output.`
+Tabs
+  1 Chat       — conversation, slash commands (/help, /skill, /model…)
+  2 Files      — workspace file browser
+  3 Diff       — files Kern wrote or edited
+  4 Procs      — shell commands, exit codes, live output
+  5 Skills     — load .kern/skills/*.md, activate with enter
+
+Skills
+  Create .kern/skills/<name>.md with frontmatter:
+  ---
+  name: my-skill
+  description: what it does
+  ---
+  Skill prompt here.
+  Activate with /skill <name> or press enter in the Skills tab.`
