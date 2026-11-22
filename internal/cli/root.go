@@ -32,8 +32,8 @@ import (
 )
 
 var (
-	flagModel  string
-	flagAuto   bool
+	flagModel string
+	flagAuto  bool
 
 	flagContinue bool
 	flagSession  string
@@ -911,13 +911,37 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("%s already exists", path)
 		}
 		content := `{
-  "model": "openai/gpt-4o"
+  "model": "plusvibe/[REDACTED].5",
+  "provider": {
+    "plusvibe": {
+      "options": {
+        "baseURL": "https://api.plusvibe.com/v1",
+        "apiKey": "${PLUSVIBE_API_KEY}"
+      }
+    }
+  }
 }
 `
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return err
 		}
 		fmt.Printf("created %s\n", path)
+		fmt.Println("set PLUSVIBE_API_KEY in your environment or add the key under provider.plusvibe.options.apiKey")
+		// Scaffold a sample skill.
+		skillDir := filepath.Join(cwd(), ".kern", "skills")
+		if !util.Exists(skillDir) {
+			if err := os.MkdirAll(skillDir, 0o755); err == nil {
+				example := `---
+name: hello
+description: Greet the user in a friendly way
+---
+You are a friendly assistant. When the user sends a message, greet them warmly and ask how you can help.
+`
+				if err := os.WriteFile(filepath.Join(skillDir, "hello.md"), []byte(example), 0o644); err == nil {
+					fmt.Printf("created %s (sample skill)\n", filepath.Join(skillDir, "hello.md"))
+				}
+			}
+		}
 		return nil
 	},
 }

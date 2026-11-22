@@ -36,7 +36,12 @@ func FromConfig(providerID string, p *config.Provider, apiKey string) (Provider,
 			Headers:    p.Headers(),
 		}
 	case "google":
-		return nil, fmt.Errorf("provider %q: Google Gemini is not implemented yet", providerID)
+		base = &Gemini{
+			ProviderID: providerID,
+			BaseURL:    p.Endpoint(),
+			APIKey:     apiKey,
+			Headers:    p.Headers(),
+		}
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported kind %q", providerID, p.Kind())
 	}

@@ -15,8 +15,8 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
-	appcore "github.com/GovnocoderAI/kern/internal/app"
 	"github.com/GovnocoderAI/kern/internal/agent"
+	appcore "github.com/GovnocoderAI/kern/internal/app"
 	"github.com/GovnocoderAI/kern/internal/provider"
 	"github.com/GovnocoderAI/kern/internal/session"
 	"github.com/GovnocoderAI/kern/internal/skill"
