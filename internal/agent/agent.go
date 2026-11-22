@@ -18,6 +18,16 @@ import (
 	"github.com/GovnocoderAI/kern/internal/util"
 )
 
+// Observer receives structured agent events. When nil, Kern falls back to the
+// plain console renderer.
+type Observer interface {
+	OnText(delta string)
+	OnToolStart(name, summary string)
+	OnToolResult(name string, ok bool, output string)
+	OnUsage(usage provider.Usage)
+	OnStepDone()
+}
+
 type Agent struct {
 	Provider   provider.Provider
 	ProviderID string
@@ -26,6 +36,7 @@ type Agent struct {
 	Tools      *tools.Registry
 	Perms      *permission.Manager
 	UI         *ui.Console
+	Observer   Observer
 	MaxSteps   int
 	History    []provider.Message
 	Usage      provider.Usage
@@ -75,7 +86,7 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 			switch ev.Type {
 			case provider.EventText:
 				text.WriteString(ev.Text)
-				a.UI.AssistantDelta(ev.Text)
+				a.emitText(ev.Text)
 			case provider.EventReasoning:
 				// Reasoning is intentionally hidden in the console.
 			case provider.EventToolCall:
@@ -87,13 +98,14 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 					a.Usage.InputTokens += ev.Usage.InputTokens
 					a.Usage.OutputTokens += ev.Usage.OutputTokens
 					a.Usage.TotalTokens += ev.Usage.TotalTokens
+					a.emitUsage(*ev.Usage)
 				}
 			case provider.EventError:
 				streamErr = ev.Err
 			}
 		}
 		if text.Len() > 0 {
-			a.UI.AssistantEnd()
+			a.emitStepDone()
 		}
 		if streamErr != nil {
 			return streamErr
@@ -117,11 +129,11 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 		for i := range calls {
 			call := calls[i]
 			summary := summarizeCall(call)
-			a.UI.ToolStart(call.Name, summary)
+			a.emitToolStart(call.Name, summary)
 
 			result, isErr := a.execute(ctx, call)
 			ok := !isErr
-			a.UI.ToolResult(call.Name, ok, summarizeResult(result))
+			a.emitToolResult(call.Name, ok, summarizeResult(result))
 
 			a.History = append(a.History, provider.Message{
 				Role: provider.RoleTool,
@@ -138,6 +150,44 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 		}
 	}
 	return fmt.Errorf("stopped after %d steps without a final answer", a.MaxSteps)
+}
+
+func (a *Agent) emitText(delta string) {
+	if a.Observer != nil {
+		a.Observer.OnText(delta)
+		return
+	}
+	a.UI.AssistantDelta(delta)
+}
+
+func (a *Agent) emitStepDone() {
+	if a.Observer != nil {
+		a.Observer.OnStepDone()
+		return
+	}
+	a.UI.AssistantEnd()
+}
+
+func (a *Agent) emitToolStart(name, summary string) {
+	if a.Observer != nil {
+		a.Observer.OnToolStart(name, summary)
+		return
+	}
+	a.UI.ToolStart(name, summary)
+}
+
+func (a *Agent) emitToolResult(name string, ok bool, output string) {
+	if a.Observer != nil {
+		a.Observer.OnToolResult(name, ok, output)
+		return
+	}
+	a.UI.ToolResult(name, ok, output)
+}
+
+func (a *Agent) emitUsage(usage provider.Usage) {
+	if a.Observer != nil {
+		a.Observer.OnUsage(usage)
+	}
 }
 
 func (a *Agent) execute(ctx context.Context, call provider.ToolCall) (string, bool) {

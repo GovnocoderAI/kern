@@ -68,8 +68,35 @@ func TestTodo(t *testing.T) {
 	if !strings.Contains(out, "do it") {
 		t.Fatalf("todo: %s", out)
 	}
-	if len(r.Env().Todos) != 1 {
-		t.Fatalf("todos = %d", len(r.Env().Todos))
+	if len(r.Env().TodosSnapshot()) != 1 {
+		t.Fatalf("todos = %d", len(r.Env().TodosSnapshot()))
+	}
+}
+
+func TestChangeTracking(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRegistry(dir, "")
+	run(t, r, "write", `{"path":"a.txt","content":"one"}`)
+	run(t, r, "edit", `{"path":"a.txt","oldString":"one","newString":"two"}`)
+	changes := r.Env().ChangesSnapshot()
+	if len(changes) != 2 {
+		t.Fatalf("changes = %d", len(changes))
+	}
+	if changes[1].Before != "one" || changes[1].After != "two" {
+		t.Fatalf("change = %+v", changes[1])
+	}
+}
+
+func TestProcessTracking(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRegistry(dir, "")
+	run(t, r, "bash", `{"command":"echo hi"}`)
+	procs := r.Env().ProcessesSnapshot()
+	if len(procs) != 1 {
+		t.Fatalf("processes = %d", len(procs))
+	}
+	if procs[0].Running || procs[0].ExitCode != 0 || !strings.Contains(procs[0].Output, "hi") {
+		t.Fatalf("process = %+v", procs[0])
 	}
 }
 

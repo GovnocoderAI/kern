@@ -19,11 +19,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/GovnocoderAI/kern/internal/agent"
+	appcore "github.com/GovnocoderAI/kern/internal/app"
 	"github.com/GovnocoderAI/kern/internal/config"
-	"github.com/GovnocoderAI/kern/internal/permission"
 	"github.com/GovnocoderAI/kern/internal/provider"
 	"github.com/GovnocoderAI/kern/internal/session"
 	"github.com/GovnocoderAI/kern/internal/tools"
+	"github.com/GovnocoderAI/kern/internal/tui"
 	"github.com/GovnocoderAI/kern/internal/ui"
 	"github.com/GovnocoderAI/kern/internal/util"
 	"github.com/GovnocoderAI/kern/internal/version"
@@ -64,6 +65,9 @@ var rootCmd = &cobra.Command{
 		if len(args) == 1 {
 			workdir = args[0]
 		}
+		if isTTY() && !flagMini {
+			return runTUI(workdir)
+		}
 		return runInteractive(workdir)
 	},
 }
@@ -97,7 +101,7 @@ func init() {
 	pf.StringVar(&flagMDNSDomain, "mdns-domain", "kern.local", "mDNS domain")
 	pf.StringArrayVar(&flagCORS, "cors", nil, "additional CORS origins")
 
-	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, miniCmd, statsCmd, agentCmd)
+	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, miniCmd, tuiCmd, statsCmd, agentCmd)
 }
 
 func isTTY() bool {
@@ -124,6 +128,7 @@ type runtimeOptions struct {
 }
 
 type app struct {
+	core       *appcore.App
 	cfg        *config.Config
 	auth       *config.Auth
 	agent      *agent.Agent
@@ -136,144 +141,79 @@ type app struct {
 }
 
 func newRuntime(workdir string, opts runtimeOptions) (*app, error) {
-	abs, err := filepath.Abs(workdir)
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := config.Load(abs)
-	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
-	}
-	auth := config.LoadAuth()
-	store := session.NewStore()
-
-	var sess *session.Session
-	switch {
-	case opts.sessionID != "":
-		sess, err = store.Load(opts.sessionID)
-		if err != nil {
-			return nil, fmt.Errorf("session %s: %w", opts.sessionID, err)
-		}
-	case opts.continueLast:
-		sess, err = store.Latest(abs)
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				return nil, err
-			}
-			sess = session.New(abs, "")
-		}
-	default:
-		sess = session.New(abs, "")
-	}
-	if opts.fork && opts.sessionID != "" {
-		forked := session.New(abs, "")
-		forked.Messages = append([]provider.Message(nil), sess.Messages...)
-		forked.Title = sess.Title + " (fork)"
-		sess = forked
-	}
-
 	modelRef := opts.model
 	if modelRef == "" {
 		modelRef = flagModel
 	}
-	if modelRef == "" && sess.Model != "" && (opts.continueLast || opts.sessionID != "") {
-		modelRef = sess.Model
-	}
-	pid, mid, err := cfg.ResolveModel(modelRef)
+	core, err := appcore.New(appcore.Options{
+		Workdir:     workdir,
+		Model:       modelRef,
+		SessionID:   opts.sessionID,
+		Continue:    opts.continueLast,
+		Fork:        opts.fork,
+		Auto:        opts.auto || flagAuto,
+		Interactive: opts.interactive,
+	})
 	if err != nil {
 		return nil, err
 	}
-	p := cfg.Providers[pid]
-	prov, err := buildProvider(pid, p, cfg.APIKey(pid, auth))
-	if err != nil {
-		return nil, err
-	}
-
-	console := ui.New()
-	var promptFn permission.PromptFunc
-	if opts.interactive {
-		promptFn = func(action, resource string) (bool, error) {
-			return console.Ask(fmt.Sprintf("permission: %s %s", action, resource))
-		}
-	}
-	perms := permission.New(cfg.Permissions, opts.auto || flagAuto, promptFn)
-	registry := tools.NewRegistry(abs, cfg.Shell)
-	system := agent.BuildSystemPrompt(abs, cfg.Instructions)
-	ag := agent.New(prov, pid, mid, system, registry, perms, console)
-	ag.History = sess.Messages
-	ag.Usage = sess.Usage
-
-	sess.Model = pid + "/" + mid
-	sess.Workdir = abs
-
 	return &app{
-		cfg:        cfg,
-		auth:       auth,
-		agent:      ag,
-		sess:       sess,
-		store:      store,
-		console:    console,
-		providerID: pid,
-		modelID:    mid,
-		workdir:    abs,
+		core:       core,
+		cfg:        core.Config,
+		auth:       core.Auth,
+		agent:      core.Agent,
+		sess:       core.Session,
+		store:      core.Store,
+		console:    core.Console,
+		providerID: core.ProviderID,
+		modelID:    core.ModelID,
+		workdir:    core.Workdir,
 	}, nil
 }
 
-func buildProvider(pid string, p *config.Provider, key string) (provider.Provider, error) {
-	if p == nil {
-		return nil, fmt.Errorf("provider %q is not configured", pid)
-	}
-	switch p.Kind() {
-	case "openai":
-		return &provider.OpenAI{
-			ProviderID: pid,
-			BaseURL:    p.Endpoint(),
-			APIKey:     key,
-			Headers:    p.Headers(),
-		}, nil
-	case "anthropic":
-		return &provider.Anthropic{
-			ProviderID: pid,
-			BaseURL:    p.Endpoint(),
-			APIKey:     key,
-			Headers:    p.Headers(),
-		}, nil
-	case "google":
-		return nil, fmt.Errorf("provider %q: Google Gemini is not implemented yet", pid)
-	default:
-		return nil, fmt.Errorf("provider %q: unsupported kind %q", pid, p.Kind())
-	}
-}
-
 func (r *app) sync() {
-	r.sess.Messages = r.agent.History
-	r.sess.Usage = r.agent.Usage
-	r.sess.UpdatedAt = time.Now()
+	r.core.Sync()
 }
 
 func (r *app) save() {
-	r.sync()
-	if err := r.store.Save(r.sess); err != nil {
+	if err := r.core.Save(); err != nil {
 		r.console.Warn("could not save session: %v", err)
 	}
 }
 
 func (r *app) rebuildModel(ref string) error {
-	pid, mid, err := r.cfg.ResolveModel(ref)
-	if err != nil {
+	if err := r.core.RebuildModel(ref); err != nil {
 		return err
 	}
-	prov, err := buildProvider(pid, r.cfg.Providers[pid], r.cfg.APIKey(pid, r.auth))
-	if err != nil {
-		return err
-	}
-	r.agent.Provider = prov
-	r.agent.ProviderID = pid
-	r.agent.Model = mid
-	r.providerID = pid
-	r.modelID = mid
-	r.sess.Model = pid + "/" + mid
+	r.agent = r.core.Agent
+	r.sess = r.core.Session
+	r.providerID = r.core.ProviderID
+	r.modelID = r.core.ModelID
 	return nil
+}
+
+func runTUI(workdir string) error {
+	return tui.Run(appcore.Options{
+		Workdir:   workdir,
+		Model:     flagModel,
+		SessionID: flagSession,
+		Continue:  flagContinue,
+		Fork:      flagFork,
+		Auto:      flagAuto,
+	})
+}
+
+var tuiCmd = &cobra.Command{
+	Use:   "tui [project]",
+	Short: "Start the full-screen terminal interface",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		workdir := "."
+		if len(args) == 1 {
+			workdir = args[0]
+		}
+		return runTUI(workdir)
+	},
 }
 
 // ---- interactive ----
@@ -464,7 +404,7 @@ var modelsCmd = &cobra.Command{
 			fmt.Printf("%s (%s) %s\n", pid, p.Kind(), p.Endpoint())
 			local := p.SortedModels()
 			if modelsRemote || len(local) == 0 {
-				prov, err := buildProvider(pid, p, cfg.APIKey(pid, auth))
+				prov, err := provider.FromConfig(pid, p, cfg.APIKey(pid, auth))
 				if err == nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 					remote, rerr := prov.Models(ctx)

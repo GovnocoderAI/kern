@@ -80,6 +80,11 @@ func (m *Manager) Check(action, resource string) Effect {
 	}
 }
 
+// Allow appends an allow rule at runtime, used by the "always allow" action.
+func (m *Manager) Allow(action, resource string) {
+	m.Rules = append(m.Rules, Rule{Action: action, Resource: resource, Effect: Allow})
+}
+
 // matchCommand matches shell patterns where "*" spans spaces and slashes.
 func matchCommand(pattern, command string) bool {
 	var b strings.Builder
