@@ -135,6 +135,18 @@ func (e *Env) EndProcess(p *Process, exitCode int, output string) {
 	p.cancel = nil
 }
 
+// SetProcessOutput updates a running process's output buffer.
+func (e *Env) SetProcessOutput(id, output string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, p := range e.Processes {
+		if p.ID == id {
+			p.Output = output
+			return
+		}
+	}
+}
+
 func (e *Env) ProcessesSnapshot() []Process {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -175,6 +187,7 @@ func NewRegistry(workdir, shell string) *Registry {
 	for _, t := range []Tool{
 		&ReadTool{}, &WriteTool{}, &EditTool{}, &BashTool{},
 		&GrepTool{}, &GlobTool{}, &LsTool{}, &TodoTool{}, &WebFetchTool{},
+		&ProcessTool{}, &JokeTool{},
 	} {
 		r.tools[t.Name()] = t
 		r.order = append(r.order, t.Name())
@@ -216,6 +229,8 @@ func Action(name string) string {
 		return "shell"
 	case "webfetch":
 		return "webfetch"
+	case "process", "joke":
+		return "read"
 	default:
 		return "read"
 	}
@@ -546,7 +561,8 @@ func (t *BashTool) Run(ctx context.Context, raw json.RawMessage, env *Env) (stri
 	}
 	env.EndProcess(proc, exitCode, out)
 	if timedOut {
-		return fmt.Sprintf("command timed out after %ds (exit code %d)\n%s", timeout, exitCode, out), nil
+		return fmt.Sprintf("command timed out after %ds (exit code %d)\n%s\nhint: the command is still running as process %s; use the process tool to read its output or kill it.",
+			timeout, exitCode, out, proc.ID), nil
 	}
 	return fmt.Sprintf("exit code %d\n%s", exitCode, out), nil
 }

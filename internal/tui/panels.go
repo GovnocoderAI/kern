@@ -211,6 +211,8 @@ func (m *Model) refreshDetail() {
 	case tabProcs:
 		m.loadProcesses()
 		m.selectProcess()
+	case tabSkills:
+		m.selectSkill()
 	default:
 		m.updateChat()
 	}
@@ -241,6 +243,29 @@ func (m *Model) refreshDynamic() {
 
 func (m *Model) readyChanges() []tools.Change { return m.changes }
 
+// selectSkill shows the details for the selected skill in the detail pane.
+func (m *Model) selectSkill() {
+	if len(m.skills) == 0 {
+		m.detail.SetContent(sDim.Render("no skills found.\n\nCreate .kern/skills/*.md files with frontmatter:\n---\nname: my-skill\ndescription: does something\n---\nSkill prompt here."))
+		m.detail.GotoTop()
+		return
+	}
+	m.skillIdx = clamp(m.skillIdx, 0, len(m.skills)-1)
+	s := m.skills[m.skillIdx]
+	var b strings.Builder
+	mark := " "
+	if s.Name == m.activeSkill {
+		mark = "*"
+	}
+	b.WriteString(sTitle.Render(mark + " " + s.Name))
+	b.WriteString("\n")
+	b.WriteString(sDim.Render(s.Description))
+	b.WriteString("\n\n")
+	b.WriteString(s.Prompt)
+	m.detail.SetContent(b.String())
+	m.detail.GotoTop()
+}
+
 func (m *Model) listView() string {
 	title := "FILES"
 	switch m.tab {
@@ -248,6 +273,8 @@ func (m *Model) listView() string {
 		title = "CHANGES"
 	case tabProcs:
 		title = "PROCESSES"
+	case tabSkills:
+		title = "SKILLS"
 	}
 	lines := []string{sTitle.Render(title)}
 	h := m.contentHeight() - 4
@@ -285,6 +312,19 @@ func (m *Model) listView() string {
 				icon = "✗"
 			}
 			lines = append(lines, selectableLine(icon+" "+p.Command, i == m.procIdx, 27))
+		}
+	case tabSkills:
+		start, end := window(len(m.skills), m.skillIdx, h)
+		if len(m.skills) == 0 {
+			lines = append(lines, sDim.Render("  no skills found"))
+		}
+		for i := start; i < end; i++ {
+			s := m.skills[i]
+			mark := " "
+			if s.Name == m.activeSkill {
+				mark = "*"
+			}
+			lines = append(lines, selectableLine(mark+" "+s.Name, i == m.skillIdx, 27))
 		}
 	}
 	lines = append(lines, "", sDim.Render("j/k · enter · r"))

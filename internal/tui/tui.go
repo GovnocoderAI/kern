@@ -16,8 +16,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	appcore "github.com/GovnocoderAI/kern/internal/app"
+	"github.com/GovnocoderAI/kern/internal/agent"
 	"github.com/GovnocoderAI/kern/internal/provider"
 	"github.com/GovnocoderAI/kern/internal/session"
+	"github.com/GovnocoderAI/kern/internal/skill"
 	"github.com/GovnocoderAI/kern/internal/tools"
 	"github.com/GovnocoderAI/kern/internal/version"
 )
@@ -27,6 +29,7 @@ const (
 	tabFiles
 	tabDiff
 	tabProcs
+	tabSkills
 )
 
 const (
@@ -95,6 +98,10 @@ type Model struct {
 	models     []string
 	modelIdx   int
 	permReq    *permRequestMsg
+
+	skills      []skill.Skill
+	skillIdx    int
+	activeSkill string
 }
 
 // Run starts the full-screen interface for a prepared session.
@@ -110,6 +117,7 @@ func Run(opts appcore.Options) error {
 		return err
 	}
 	m := New(application, obs, bridge)
+	m.loadSkills()
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	obs.SetSender(p.Send)
 	_, err = p.Run()
@@ -363,6 +371,9 @@ func (m *Model) statusView() string {
 	left := fmt.Sprintf(" %s %s  %s  in:%d out:%d  changes:%d  procs:%d",
 		spin, m.app.ProviderID+"/"+m.app.ModelID, m.status,
 		usage.InputTokens, usage.OutputTokens, len(m.readyChanges()), len(m.procs))
+	if m.activeSkill != "" {
+		left += "  skill:" + m.activeSkill
+	}
 	right := fmt.Sprintf("%s %s ", m.focusName(), m.tabName())
 	return sStatus.Width(m.width).Render(fitLine(left, right, m.width-2))
 }
@@ -386,6 +397,8 @@ func (m *Model) tabName() string {
 		return "diff"
 	case tabProcs:
 		return "processes"
+	case tabSkills:
+		return "skills"
 	default:
 		return "chat"
 	}
@@ -474,7 +487,7 @@ func (m *Model) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "1", "2", "3", "4":
+	case "1", "2", "3", "4", "5":
 		m.tab = int(msg.String()[0] - '1')
 		m.refreshDetail()
 		return m, nil
@@ -502,6 +515,8 @@ func (m *Model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDiffKey(msg)
 	case tabProcs:
 		return m.handleProcsKey(msg)
+	case tabSkills:
+		return m.handleSkillsKey(msg)
 	}
 	return m, nil
 }
@@ -610,6 +625,38 @@ func (m *Model) handleProcsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) handleSkillsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "j", "down":
+		if m.skillIdx < len(m.skills)-1 {
+			m.skillIdx++
+		}
+	case "k", "up":
+		if m.skillIdx > 0 {
+			m.skillIdx--
+		}
+	case "g":
+		m.skillIdx = 0
+	case "G":
+		if len(m.skills) > 0 {
+			m.skillIdx = len(m.skills) - 1
+		}
+	case "enter", "a":
+		if m.skillIdx >= 0 && m.skillIdx < len(m.skills) {
+			m.activeSkill = m.skills[m.skillIdx].Name
+			m.status = "skill on: " + m.activeSkill
+		}
+	case "x":
+		if m.activeSkill != "" {
+			m.activeSkill = ""
+			m.status = "skill off"
+		}
+	case "r":
+		m.loadSkills()
+	}
+	return m, nil
+}
+
 func (m *Model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.modal == "perm" {
 		switch msg.String() {
@@ -683,6 +730,10 @@ func (m *Model) replyPermission(allow, always bool) {
 
 // ---- chat ----
 
+func (m *Model) loadSkills() {
+	m.skills = skill.Load(m.app.Workdir)
+}
+
 func (m *Model) submit() tea.Cmd {
 	text := strings.TrimSpace(m.input.Value())
 	if text == "" {
@@ -704,8 +755,18 @@ func (m *Model) submit() tea.Cmd {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
+	in := agent.RunInput{Text: text}
+	if m.activeSkill != "" {
+		for _, s := range m.skills {
+			if s.Name == m.activeSkill {
+				in.Skill = s.Name
+				in.SkillPrompt = s.Prompt
+				break
+			}
+		}
+	}
 	go func() {
-		err := m.app.Agent.Run(ctx, text)
+		err := m.app.Agent.Run(ctx, in)
 		m.obs.TurnDone(err)
 	}()
 	return m.spinner.Tick
@@ -741,10 +802,50 @@ func (m *Model) handleSlash(line string) tea.Cmd {
 	case "/cost":
 		u := m.app.Agent.Usage
 		m.addInfo(fmt.Sprintf("tokens: in %d, out %d, total %d", u.InputTokens, u.OutputTokens, u.TotalTokens))
+	case "/skill":
+		if arg == "" {
+			m.addInfo(m.skillSummary())
+			break
+		}
+		if arg == "off" {
+			m.activeSkill = ""
+			m.addInfo("skill off")
+			break
+		}
+		found := false
+		for _, s := range m.skills {
+			if s.Name == arg {
+				m.activeSkill = s.Name
+				found = true
+				m.addInfo("skill on: " + s.Name)
+				break
+			}
+		}
+		if !found {
+			m.addInfo("unknown skill " + arg + "; try /skill")
+		}
 	default:
 		m.addInfo("unknown command " + cmd + "; try /help")
 	}
 	return nil
+}
+
+func (m *Model) skillSummary() string {
+	if len(m.skills) == 0 {
+		return "no skills found (create .kern/skills/*.md)"
+	}
+	var b strings.Builder
+	if m.activeSkill != "" {
+		b.WriteString("active: " + m.activeSkill + "\n")
+	}
+	for _, s := range m.skills {
+		mark := " "
+		if s.Name == m.activeSkill {
+			mark = "*"
+		}
+		b.WriteString(fmt.Sprintf("%s %s — %s\n", mark, s.Name, s.Description))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func (m *Model) addInfo(text string) {

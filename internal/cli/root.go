@@ -23,6 +23,7 @@ import (
 	"github.com/GovnocoderAI/kern/internal/config"
 	"github.com/GovnocoderAI/kern/internal/provider"
 	"github.com/GovnocoderAI/kern/internal/session"
+	"github.com/GovnocoderAI/kern/internal/skill"
 	"github.com/GovnocoderAI/kern/internal/tools"
 	"github.com/GovnocoderAI/kern/internal/tui"
 	"github.com/GovnocoderAI/kern/internal/ui"
@@ -31,14 +32,15 @@ import (
 )
 
 var (
-	flagModel string
-	flagAuto  bool
+	flagModel  string
+	flagAuto   bool
 
 	flagContinue bool
 	flagSession  string
 	flagFork     bool
 	flagPrompt   string
 	flagMini     bool
+	flagSkill    string
 )
 
 var rootCmd = &cobra.Command{
@@ -78,8 +80,9 @@ func init() {
 	pf.BoolVar(&flagFork, "fork", false, "fork the session when continuing")
 	pf.StringVar(&flagPrompt, "prompt", "", "prompt to use")
 	pf.BoolVar(&flagMini, "mini", false, "start the minimal interface")
+	pf.StringVar(&flagSkill, "skill", "", "activate a skill by name for this run")
 
-	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, miniCmd, tuiCmd, statsCmd, agentCmd)
+	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, miniCmd, tuiCmd, statsCmd, agentCmd, skillCmd)
 }
 
 func isTTY() bool {
@@ -116,6 +119,21 @@ type app struct {
 	providerID string
 	modelID    string
 	workdir    string
+	skills     []skill.Skill
+}
+
+// resolveSkill returns the active skill for the current run, or nil.
+func (r *app) resolveSkill() *skill.Skill {
+	if flagSkill == "" {
+		return nil
+	}
+	for i := range r.skills {
+		if r.skills[i].Name == flagSkill {
+			return &r.skills[i]
+		}
+	}
+	r.console.Error("skill %q not found; see `kern skill list`", flagSkill)
+	return nil
 }
 
 func newRuntime(workdir string, opts runtimeOptions) (*app, error) {
@@ -135,7 +153,7 @@ func newRuntime(workdir string, opts runtimeOptions) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &app{
+	rt := &app{
 		core:       core,
 		cfg:        core.Config,
 		auth:       core.Auth,
@@ -146,7 +164,9 @@ func newRuntime(workdir string, opts runtimeOptions) (*app, error) {
 		providerID: core.ProviderID,
 		modelID:    core.ModelID,
 		workdir:    core.Workdir,
-	}, nil
+	}
+	rt.skills = skill.Load(rt.workdir)
+	return rt, nil
 }
 
 func (r *app) sync() {
@@ -168,6 +188,17 @@ func (r *app) rebuildModel(ref string) error {
 	r.providerID = r.core.ProviderID
 	r.modelID = r.core.ModelID
 	return nil
+}
+
+// runSkillInput returns the RunInput for the given user text, attaching the
+// active skill (from --skill) to the system prompt.
+func (r *app) runInput(text string) agent.RunInput {
+	in := agent.RunInput{Text: text}
+	if sk := r.resolveSkill(); sk != nil {
+		in.Skill = sk.Name
+		in.SkillPrompt = sk.Prompt
+	}
+	return in
 }
 
 func runTUI(workdir string) error {
@@ -240,7 +271,7 @@ func runInteractive(workdirArg string) error {
 			}
 			continue
 		}
-		if err := rt.agent.Run(context.Background(), line); err != nil {
+		if err := rt.agent.Run(context.Background(), rt.runInput(line)); err != nil {
 			c.Error("%v", err)
 		}
 		rt.sync()
@@ -343,7 +374,7 @@ var runCmd = &cobra.Command{
 			return err
 		}
 		defer rt.save()
-		if err := rt.agent.Run(context.Background(), prompt); err != nil {
+		if err := rt.agent.Run(context.Background(), rt.runInput(prompt)); err != nil {
 			return err
 		}
 		rt.sync()
@@ -797,6 +828,48 @@ var agentCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+var skillCmd = &cobra.Command{
+	Use:   "skill",
+	Short: "List and validate skills",
+}
+
+var skillListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List available skills (project + global)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		skills := skill.Load(cwd())
+		if len(skills) == 0 {
+			fmt.Println("no skills found (create .kern/skills/*.md)")
+			return nil
+		}
+		for _, s := range skills {
+			fmt.Printf("%s  %s  %s\n", s.Name, s.Description, s.Path)
+		}
+		return nil
+	},
+}
+
+var skillValidateCmd = &cobra.Command{
+	Use:   "validate",
+	Short: "Validate all skill files",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		skills := skill.Load(cwd())
+		problems := skill.Validate(skills)
+		if len(problems) == 0 {
+			fmt.Printf("ok: %d skill(s) valid\n", len(skills))
+			return nil
+		}
+		for _, p := range problems {
+			fmt.Println("problem: " + p)
+		}
+		return fmt.Errorf("%d problem(s) found", len(problems))
+	},
+}
+
+func init() {
+	skillCmd.AddCommand(skillListCmd, skillValidateCmd)
 }
 
 // ---- version / completion / init ----

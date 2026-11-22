@@ -44,6 +44,17 @@ type Agent struct {
 	Usage      provider.Usage
 }
 
+// RunInput is the input to one agent turn.
+type RunInput struct {
+	// Text is the user's message.
+	Text string
+	// Skill, when set, is the name of an active skill whose prompt is
+	// appended to the system prompt for this turn only.
+	Skill string
+	// SkillPrompt is the skill's prompt body.
+	SkillPrompt string
+}
+
 func New(p provider.Provider, providerID, model, system string, registry *tools.Registry, perms *permission.Manager, console *ui.Console) *Agent {
 	return &Agent{
 		Provider:   p,
@@ -63,8 +74,12 @@ func (a *Agent) Reset() {
 }
 
 // Run executes one user turn, including any tool calls, until the model stops.
-func (a *Agent) Run(ctx context.Context, userText string) error {
-	a.History = append(a.History, provider.Text(provider.RoleUser, userText))
+func (a *Agent) Run(ctx context.Context, in RunInput) error {
+	a.History = append(a.History, provider.Text(provider.RoleUser, in.Text))
+	system := a.System
+	if in.Skill != "" && in.SkillPrompt != "" {
+		system += "\n\n" + in.SkillPrompt
+	}
 
 	for step := 0; step < a.MaxSteps; step++ {
 		if err := ctx.Err(); err != nil {
@@ -72,7 +87,7 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 		}
 		req := provider.Request{
 			Model:    a.Model,
-			System:   a.System,
+			System:   system,
 			Messages: a.History,
 			Tools:    a.Tools.Defs(),
 		}

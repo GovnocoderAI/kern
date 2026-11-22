@@ -63,7 +63,7 @@ func TestRepairAfterCancel(t *testing.T) {
 	ag.MaxSteps = 1
 
 	// Simulate a cancel: run one step that ends with a tool call, then repair.
-	if err := ag.Run(context.Background(), "read it"); err != nil && !errors.Is(err, context.Canceled) {
+	if err := ag.Run(context.Background(), RunInput{Text: "read it"}); err != nil && !errors.Is(err, context.Canceled) {
 		// The scripted provider is not flaky, so this is the expected non-cancel path.
 		t.Skip("scripted provider did not cancel; path not exercised here")
 	}
@@ -104,7 +104,7 @@ func TestCancelledRunReturnsKerr(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		cancel()
 	}()
-	err := ag.Run(ctx, "hello")
+	err := ag.Run(ctx, RunInput{Text: "hello"})
 	if !errors.Is(err, kerr.Cancelled().Err) {
 		t.Fatalf("expected Cancelled, got %v", err)
 	}
@@ -149,7 +149,7 @@ func TestStreamErrorClassification(t *testing.T) {
 	prov2 := &failStream{}
 	ag := New(prov2, "fail", "m", "sys", tools.NewRegistry(dir, ""), permission.New(nil, true, nil), newConsole())
 	ag.MaxSteps = 2
-	err := ag.Run(context.Background(), "x")
+	err := ag.Run(context.Background(), RunInput{Text: "x"})
 	if err == nil {
 		t.Fatal("expected an error")
 	}

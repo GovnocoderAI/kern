@@ -62,7 +62,7 @@ func TestToolLoop(t *testing.T) {
 	prov := &scripted{tool: provider.ToolCall{ID: "c1", Name: "read", Arguments: json.RawMessage(`{"path":"a.txt"}`)}}
 	ag := New(prov, "scripted", "m", "sys", tools.NewRegistry(dir, ""), permission.New(nil, true, nil), newConsole())
 
-	if err := ag.Run(context.Background(), "read it"); err != nil {
+	if err := ag.Run(context.Background(), RunInput{Text: "read it"}); err != nil {
 		t.Fatal(err)
 	}
 	if prov.calls != 2 {
@@ -90,7 +90,7 @@ func TestPermissionDenied(t *testing.T) {
 	perms := permission.New([]config.PermissionRule{{Action: "edit", Resource: "*", Effect: "deny"}}, false, nil)
 	ag := New(prov, "scripted", "m", "sys", tools.NewRegistry(dir, ""), perms, newConsole())
 
-	if err := ag.Run(context.Background(), "write it"); err != nil {
+	if err := ag.Run(context.Background(), RunInput{Text: "write it"}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(ag.History[2].Parts[0].ToolResult.Content, "permission denied") {
