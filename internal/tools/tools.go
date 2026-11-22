@@ -259,62 +259,50 @@ func resolve(workdir, p string) (string, error) {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return "", fmt.Errorf("path %q is outside the workspace", p)
 	}
-	// Symlink check: follow the real path and verify it still resolves to
-	// the workspace root. This blocks symlinks and directory junctions
-	// that point outside the workspace.
-	realAbs, err := filepath.EvalSymlinks(abs)
-	if err == nil {
+	// Symlink check: walk each component of abs from root, resolving
+	// symlinks one at a time. This catches the case where a directory
+	// component is a symlink to outside, even if the full path doesn't
+	// exist yet.
+	{
 		realRoot, rootErr := filepath.EvalSymlinks(root)
 		if rootErr == nil {
-			if realRel, relErr := filepath.Rel(realRoot, realAbs); relErr == nil {
-				if realRel == ".." || strings.HasPrefix(realRel, ".."+string(os.PathSeparator)) {
-					return "", fmt.Errorf("path %q escapes the workspace via symlink", p)
-				}
-			}
-		}
-	} else if !os.IsNotExist(err) {
-		// The path does not exist yet (e.g. a file to be written). Check the
-		// deepest existing ancestor instead.
-		ancestor := abs
-		for {
-			if real, aErr := filepath.EvalSymlinks(ancestor); aErr == nil {
-				realRoot, rootErr := filepath.EvalSymlinks(root)
-				if rootErr != nil {
-					break
-				}
-				if realRel, relErr := filepath.Rel(realRoot, real); relErr == nil {
-					if realRel == ".." || strings.HasPrefix(realRel, ".."+string(os.PathSeparator)) {
-						return "", fmt.Errorf("path %q escapes the workspace via symlink", p)
+			rel, relErr := filepath.Rel(root, abs)
+			if relErr == nil {
+				parts := strings.Split(rel, string(os.PathSeparator))
+				cur := root
+				for _, part := range parts {
+					if part == "." || part == "" {
+						continue
 					}
-				}
-				break
-			}
-			parent := filepath.Dir(ancestor)
-			if parent == ancestor {
-				break
-			}
-			ancestor = parent
-		}
-	} else {
-		// Path does not exist (NotExist). The last component may be a
-		// symlink to a directory outside the workspace. Check the
-		// parent's resolved path, and if the last component is a symlink,
-		// resolve it too.
-		if parent, aErr := filepath.EvalSymlinks(filepath.Dir(abs)); aErr == nil {
-			realRoot, rootErr := filepath.EvalSymlinks(root)
-			if rootErr == nil {
-				last := filepath.Base(abs)
-				linkPath := filepath.Join(parent, last)
-				if realLink, lErr := filepath.EvalSymlinks(linkPath); lErr == nil {
-					if realRel, relErr := filepath.Rel(realRoot, realLink); relErr == nil {
-						if realRel == ".." || strings.HasPrefix(realRel, ".."+string(os.PathSeparator)) {
-							return "", fmt.Errorf("path %q escapes the workspace via symlink", p)
+					next := filepath.Join(cur, part)
+					if realNext, sErr := filepath.EvalSymlinks(next); sErr == nil {
+						if realRel, eErr := filepath.Rel(realRoot, realNext); eErr == nil {
+							if realRel == ".." || strings.HasPrefix(realRel, ".."+string(os.PathSeparator)) {
+								return "", fmt.Errorf("path %q escapes the workspace via symlink", p)
+							}
 						}
+						cur = realNext
+					} else {
+						if link, lErr := os.Readlink(next); lErr == nil {
+							target := link
+							if !filepath.IsAbs(target) {
+								target = filepath.Join(filepath.Dir(next), target)
+							}
+							if realTarget, tErr := filepath.EvalSymlinks(target); tErr == nil {
+								if realRel, eErr := filepath.Rel(realRoot, realTarget); eErr == nil {
+									if realRel == ".." || strings.HasPrefix(realRel, ".."+string(os.PathSeparator)) {
+										return "", fmt.Errorf("path %q escapes the workspace via symlink", p)
+									}
+								}
+							}
+						}
+						break
 					}
 				}
 			}
 		}
 	}
+
 	return abs, nil
 }
 
