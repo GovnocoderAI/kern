@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func run(t *testing.T, r *Registry, name, args string) string {
@@ -120,5 +121,44 @@ func TestReadTruncation(t *testing.T) {
 	out := run(t, r, "read", `{"path":"big.txt","limit":3}`)
 	if strings.Count(out, "line\n") != 3 {
 		t.Fatalf("expected 3 lines, got %q", out)
+	}
+}
+
+func TestTruncateUTF8Safe(t *testing.T) {
+	cases := []struct {
+		in    string
+		limit int
+		want  string
+	}{
+		{"hello", 10, "hello"},
+		{"привет", 10, "приве"}, // cut at 10 lands mid-4th char, rolls back
+		{"яяяяя", 8, "яяяя"},  // 8 bytes = 4 complete chars
+		{"abc", 2, "ab"},
+		{"", 5, ""},
+	}
+	for _, c := range cases {
+		got, truncated := truncate(c.in, c.limit)
+		if got != c.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", c.in, c.limit, got, c.want)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("truncate(%q, %d) produced invalid UTF-8: %q", c.in, c.limit, got)
+		}
+		_ = truncated
+	}
+}
+
+func TestReadTruncationUTF8(t *testing.T) {
+	// Truncating the output must not produce a broken multibyte character.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "u.txt")
+	// "я" is two bytes; a cut between two "я" chars would leave a continuation byte.
+	if err := os.WriteFile(path, []byte("яяяяяя\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry(dir, "")
+	out := run(t, r, "read", `{"path":"u.txt"}`)
+	if !utf8.ValidString(out) {
+		t.Fatalf("read output is invalid UTF-8: %q", out)
 	}
 }

@@ -244,7 +244,11 @@ func shorten(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	s = s[:n-1]
+	for len(s) > 0 && (s[len(s)-1]&0xC0) == 0x80 {
+		s = s[:len(s)-1]
+	}
+	return s + "…"
 }
 
 // BuildSystemPrompt assembles the base prompt, environment and AGENTS.md files.

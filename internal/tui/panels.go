@@ -24,6 +24,50 @@ var tuiSkipDirs = map[string]bool{
 	".cache": true, "coverage": true, ".idea": true, ".vscode": true,
 }
 
+// loadSessions refreshes the sidebar list from the session store.
+func (m *Model) loadSessions() {
+	sessions, err := m.app.Store.List()
+	if err != nil {
+		m.sessions = nil
+		m.sessionIdx = 0
+		return
+	}
+	m.sessions = sessions
+	m.sessionIdx = clamp(m.sessionIdx, 0, max(0, len(sessions)-1))
+	for i, s := range sessions {
+		if s.ID == m.app.Session.ID {
+			m.sessionIdx = i
+			break
+		}
+	}
+}
+
+// openSession switches the running app to the selected session.
+func (m *Model) openSession() {
+	if len(m.sessions) == 0 {
+		return
+	}
+	m.sessionIdx = clamp(m.sessionIdx, 0, len(m.sessions)-1)
+	target := m.sessions[m.sessionIdx]
+	if target.ID == m.app.Session.ID {
+		return
+	}
+	if err := m.app.Save(); err != nil {
+		m.status = "session save failed: " + err.Error()
+		return
+	}
+	m.app.Session = target
+	m.app.Agent.Reset()
+	m.app.Agent.History = target.Messages
+	m.app.Agent.Usage = target.Usage
+	m.entries = nil
+	m.seedFromHistory()
+	m.status = "opened " + target.Title
+	m.loadChanges()
+	m.loadProcesses()
+	m.updateChat()
+}
+
 func (m *Model) loadFiles() {
 	root := m.app.Workdir
 	var files []string

@@ -61,8 +61,10 @@ func (o *Observer) emit(msg tea.Msg) {
 	}
 }
 
-func (o *Observer) OnText(delta string)                  { o.emit(TextMsg(delta)) }
-func (o *Observer) OnToolStart(name, summary string)     { o.emit(ToolStartMsg{Name: name, Summary: summary}) }
+func (o *Observer) OnText(delta string) { o.emit(TextMsg(delta)) }
+func (o *Observer) OnToolStart(name, summary string) {
+	o.emit(ToolStartMsg{Name: name, Summary: summary})
+}
 func (o *Observer) OnToolResult(name string, ok bool, output string) {
 	o.emit(ToolResultMsg{Name: name, OK: ok, Output: output})
 }

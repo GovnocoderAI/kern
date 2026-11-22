@@ -4,7 +4,7 @@ Thanks for helping build an open terminal coding agent.
 
 ## Prerequisites
 
-- Go 1.23 or newer
+- Go 1.26 or newer
 - Git
 
 ## Development
@@ -12,7 +12,7 @@ Thanks for helping build an open terminal coding agent.
 ```bash
 git clone https://github.com/GovnocoderAI/kern.git
 cd kern
-go build -o bin/kern ./cmd/kern
+make build
 go test ./...
 go vet ./...
 ```
@@ -23,9 +23,11 @@ Before sending a PR, run:
 gofmt -w .
 go vet ./...
 go test ./...
+go mod tidy -diff   # must produce no output
 ```
 
-CI runs the same checks on Linux and Windows, plus cross-compilation for linux/windows on amd64/arm64.
+CI runs the same checks on Linux and Windows (plus `go test -race` on Linux),
+and cross-compiles the binary for linux/windows on amd64/arm64.
 
 ## Project layout
 
@@ -39,6 +41,8 @@ CI runs the same checks on Linux and Windows, plus cross-compilation for linux/w
 | `internal/tools` | File, shell and search tools |
 | `internal/permission` | allow/ask/deny rules |
 | `internal/session` | Persisted sessions |
+| `internal/app` | Composition root shared by the frontends |
+| `internal/tui` | Full-screen terminal interface |
 | `internal/ui` | Console presentation |
 
 ## Adding a provider

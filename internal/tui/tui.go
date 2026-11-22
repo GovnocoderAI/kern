@@ -65,8 +65,8 @@ type Model struct {
 	detail  viewport.Model
 	spinner spinner.Model
 
-	entries   []entry
-	streaming bool
+	entries    []entry
+	streaming  bool
 	chatFollow bool
 
 	running bool
@@ -78,13 +78,13 @@ type Model struct {
 	fileIdx     int
 	previewPath string
 
-	changes   []tools.Change
-	changeIdx int
+	changes         []tools.Change
+	changeIdx       int
 	lastChangeCount int
 
-	procs       []tools.Process
-	procIdx     int
-	lastProcCount int
+	procs          []tools.Process
+	procIdx        int
+	lastProcCount  int
 	lastProcOutput int
 
 	sessions   []*session.Session
@@ -466,6 +466,7 @@ func (m *Model) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.loadSessions()
 	case "enter":
+		m.openSession()
 		m.focus = focusMain
 	}
 	return m, nil
@@ -719,8 +720,18 @@ func (m *Model) handleSlash(line string) tea.Cmd {
 		return tea.Quit
 	case "/help":
 		m.modal = "help"
-	case "/models", "/model":
+	case "/models":
 		m.openModels()
+	case "/model":
+		if arg == "" {
+			m.openModels()
+			break
+		}
+		if err := m.app.RebuildModel(arg); err != nil {
+			m.addInfo("model: " + err.Error())
+			break
+		}
+		m.addInfo("model set to " + m.app.ProviderID + "/" + m.app.ModelID)
 	case "/clear":
 		m.clearConversation()
 	case "/tools":
@@ -1003,7 +1014,7 @@ func (m *Model) modalView() string {
 		}
 	}
 	content := sTitle.Render(title) + "\n\n" + body
-	box := sPanel.Width(width - 2).Padding(1, 2).Render(content)
+	box := sPanel.Width(width-2).Padding(1, 2).Render(content)
 	return box
 }
 

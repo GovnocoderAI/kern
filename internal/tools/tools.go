@@ -247,10 +247,17 @@ func resolve(workdir, p string) (string, error) {
 }
 
 func truncate(s string, limit int) (string, bool) {
+	// Never split a UTF-8 sequence: if the cut lands inside a character,
+	// roll back to the last complete character boundary.
 	if len(s) <= limit {
 		return s, false
 	}
-	return s[:limit], true
+	cut := limit
+	for cut > 0 && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	s = s[:cut]
+	return s, true
 }
 
 // ---- read ----

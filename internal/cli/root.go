@@ -31,25 +31,14 @@ import (
 )
 
 var (
-	flagModel     string
-	flagAgent     string
-	flagAuto      bool
-	flagPrintLogs bool
-	flagLogLevel  string
-	flagPure      bool
+	flagModel string
+	flagAuto  bool
 
-	flagContinue    bool
-	flagSession     string
-	flagFork        bool
-	flagPrompt      string
-	flagMini        bool
-	flagNoReplay    bool
-	flagReplayLimit int
-	flagPort        int
-	flagHostname    string
-	flagMDNS        bool
-	flagMDNSDomain  string
-	flagCORS        []string
+	flagContinue bool
+	flagSession  string
+	flagFork     bool
+	flagPrompt   string
+	flagMini     bool
 )
 
 var rootCmd = &cobra.Command{
@@ -83,23 +72,12 @@ func Execute() {
 func init() {
 	pf := rootCmd.PersistentFlags()
 	pf.StringVarP(&flagModel, "model", "m", "", "model to use (provider/model)")
-	pf.StringVar(&flagAgent, "agent", "", "agent to use")
 	pf.BoolVar(&flagAuto, "auto", false, "auto-approve permissions that are not explicitly denied")
-	pf.BoolVar(&flagPrintLogs, "print-logs", false, "print logs to stderr")
-	pf.StringVar(&flagLogLevel, "log-level", "", "log level (DEBUG, INFO, WARN, ERROR)")
-	pf.BoolVar(&flagPure, "pure", false, "run without external plugins")
 	pf.BoolVarP(&flagContinue, "continue", "c", false, "continue the last session")
 	pf.StringVarP(&flagSession, "session", "s", "", "session id to continue")
 	pf.BoolVar(&flagFork, "fork", false, "fork the session when continuing")
 	pf.StringVar(&flagPrompt, "prompt", "", "prompt to use")
 	pf.BoolVar(&flagMini, "mini", false, "start the minimal interface")
-	pf.BoolVar(&flagNoReplay, "no-replay", false, "disable replay on resume")
-	pf.IntVar(&flagReplayLimit, "replay-limit", 0, "cap replayed messages")
-	pf.IntVar(&flagPort, "port", 0, "port to listen on")
-	pf.StringVar(&flagHostname, "hostname", "127.0.0.1", "hostname to listen on")
-	pf.BoolVar(&flagMDNS, "mdns", false, "enable mDNS service discovery")
-	pf.StringVar(&flagMDNSDomain, "mdns-domain", "kern.local", "mDNS domain")
-	pf.StringArrayVar(&flagCORS, "cors", nil, "additional CORS origins")
 
 	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, miniCmd, tuiCmd, statsCmd, agentCmd)
 }
@@ -827,7 +805,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("kern " + version.String())
+		fmt.Print(version.Detailed())
 	},
 }
 
