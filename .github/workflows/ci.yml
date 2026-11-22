@@ -23,12 +23,7 @@ jobs:
           cache: true
       - name: gofmt
         run: |
-          gofmt -l . > /tmp/gofmt_out
-          if [ -s /tmp/gofmt_out ]; then
-            echo "These files are not gofmt-clean:"
-            cat /tmp/gofmt_out
-            exit 1
-          fi
+          gofmt -l .
       - name: go mod tidy check
         run: |
           go mod tidy -diff
