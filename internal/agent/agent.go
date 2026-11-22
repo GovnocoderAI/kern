@@ -4,6 +4,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GovnocoderAI/kern/internal/kerr"
 	"github.com/GovnocoderAI/kern/internal/permission"
 	"github.com/GovnocoderAI/kern/internal/provider"
 	"github.com/GovnocoderAI/kern/internal/tools"
@@ -66,7 +68,7 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 
 	for step := 0; step < a.MaxSteps; step++ {
 		if err := ctx.Err(); err != nil {
-			return err
+			return kerr.Cancelled()
 		}
 		req := provider.Request{
 			Model:    a.Model,
@@ -104,11 +106,23 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 				streamErr = ev.Err
 			}
 		}
+		if ctx.Err() != nil {
+			// Interruption mid-stream: record the partial text as context so
+			// the next turn does not repeat it, then report the cancellation.
+			if text.Len() > 0 {
+				a.History = append(a.History, provider.Message{
+					Role:  provider.RoleAssistant,
+					Parts: []provider.Part{{Type: provider.PartText, Text: text.String()}},
+				})
+			}
+			a.repairHistory()
+			return kerr.Cancelled()
+		}
 		if text.Len() > 0 {
 			a.emitStepDone()
 		}
 		if streamErr != nil {
-			return streamErr
+			return kerr.Wrap(classify(streamErr), streamErr, "provider stream failed")
 		}
 
 		assistant := provider.Message{Role: provider.RoleAssistant}
@@ -132,24 +146,92 @@ func (a *Agent) Run(ctx context.Context, userText string) error {
 			a.emitToolStart(call.Name, summary)
 
 			result, isErr := a.execute(ctx, call)
+			if ctx.Err() != nil {
+				a.History = append(a.History, toolResultMsg(call.ID, call.Name, "interrupted by user", true))
+				a.repairHistory()
+				return kerr.Cancelled()
+			}
 			ok := !isErr
 			a.emitToolResult(call.Name, ok, summarizeResult(result))
 
-			a.History = append(a.History, provider.Message{
-				Role: provider.RoleTool,
-				Parts: []provider.Part{{
-					Type: provider.PartToolResult,
-					ToolResult: &provider.ToolResult{
-						CallID:  call.ID,
-						Name:    call.Name,
-						Content: result,
-						IsError: isErr,
-					},
-				}},
-			})
+			a.History = append(a.History, toolResultMsg(call.ID, call.Name, result, isErr))
 		}
 	}
-	return fmt.Errorf("stopped after %d steps without a final answer", a.MaxSteps)
+	return kerr.User("stopped after %d steps without a final answer", a.MaxSteps)
+}
+
+// repairHistory guarantees that every assistant tool_call is followed by a
+// matching tool result. Anthropic rejects requests that violate this
+// invariant, and a cancelled turn must not leave the history broken.
+func (a *Agent) repairHistory() {
+	// Collect result call IDs that are already present.
+	have := map[string]bool{}
+	for i := len(a.History) - 1; i >= 0; i-- {
+		m := a.History[i]
+		if m.Role == provider.RoleTool {
+			for _, p := range m.Parts {
+				if p.Type == provider.PartToolResult && p.ToolResult != nil {
+					have[p.ToolResult.CallID] = true
+				}
+			}
+		}
+	}
+	// Patch in missing results, in reverse order of the assistant messages.
+	var patch []provider.Message
+	for i := len(a.History) - 1; i >= 0; i-- {
+		m := a.History[i]
+		if m.Role != provider.RoleAssistant {
+			continue
+		}
+		for _, p := range m.Parts {
+			if p.Type != provider.PartToolCall || p.ToolCall == nil {
+				continue
+			}
+			id := p.ToolCall.ID
+			if id == "" {
+				id = fmt.Sprintf("kern-synth-%d", i)
+			}
+			if !have[id] {
+				patch = append(patch, toolResultMsg(id, p.ToolCall.Name, "(no result: the turn was interrupted)", true))
+				have[id] = true
+			}
+		}
+	}
+	if len(patch) > 0 {
+		// Tool results must sit immediately after the assistant message that
+		// called them; appending to the tail is correct because no later
+		// user message has been added yet.
+		a.History = append(a.History, patch...)
+	}
+}
+
+func toolResultMsg(callID, name, content string, isErr bool) provider.Message {
+	return provider.Message{
+		Role: provider.RoleTool,
+		Parts: []provider.Part{{
+			Type: provider.PartToolResult,
+			ToolResult: &provider.ToolResult{
+				CallID:  callID,
+				Name:    name,
+				Content: content,
+				IsError: isErr,
+			},
+		}},
+	}
+}
+
+// classify maps a provider stream error to a kerr code.
+func classify(err error) kerr.Code {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return kerr.CodeCancelled
+	}
+	if status, ok := provider.IsHTTPError(err); ok {
+		if status >= 400 && status < 500 {
+			return kerr.CodeProvider
+		}
+		return kerr.CodeProvider
+	}
+	return kerr.CodeProvider
 }
 
 func (a *Agent) emitText(delta string) {
