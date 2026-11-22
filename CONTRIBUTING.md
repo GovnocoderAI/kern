@@ -10,7 +10,7 @@ Thanks for helping build an open terminal coding agent.
 ## Development
 
 ```bash
-git clone https://github.com/kern-ai/kern.git
+git clone https://github.com/GovnocoderAI/kern.git
 cd kern
 go build -o bin/kern ./cmd/kern
 go test ./...

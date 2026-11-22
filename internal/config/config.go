@@ -14,7 +14,7 @@ import (
 
 	"github.com/tailscale/hujson"
 
-	"github.com/kern-ai/kern/internal/util"
+	"github.com/GovnocoderAI/kern/internal/util"
 )
 
 type Modalities struct {

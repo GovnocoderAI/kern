@@ -9,7 +9,7 @@ Kern is pre-1.0. Security fixes land on the `main` branch and the latest release
 Please do **not** open a public issue for security problems.
 
 Use GitHub's private vulnerability reporting:
-https://github.com/kern-ai/kern/security/advisories/new
+https://github.com/GovnocoderAI/kern/security/advisories/new
 
 Include:
 

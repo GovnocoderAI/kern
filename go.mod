@@ -1,4 +1,4 @@
-module github.com/kern-ai/kern
+module github.com/GovnocoderAI/kern
 
 go 1.26
 

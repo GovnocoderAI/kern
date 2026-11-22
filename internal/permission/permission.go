@@ -8,7 +8,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/kern-ai/kern/internal/config"
+	"github.com/GovnocoderAI/kern/internal/config"
 )
 
 type Effect string

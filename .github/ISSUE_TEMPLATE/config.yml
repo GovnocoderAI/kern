@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security report
-    url: https://github.com/kern-ai/kern/security/advisories/new
+    url: https://github.com/GovnocoderAI/kern/security/advisories/new
     about: Please report vulnerabilities privately.
   - name: Questions and ideas
-    url: https://github.com/kern-ai/kern/discussions
+    url: https://github.com/GovnocoderAI/kern/discussions
     about: Ask questions and discuss ideas.

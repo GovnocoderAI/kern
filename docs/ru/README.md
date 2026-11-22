@@ -11,7 +11,7 @@
 Нужен Go 1.23+.
 
 ```bash
-git clone https://github.com/kern-ai/kern.git
+git clone https://github.com/GovnocoderAI/kern.git
 cd kern
 go build -ldflags "-s -w" -o bin/kern ./cmd/kern
 ```

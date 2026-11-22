@@ -3,7 +3,7 @@
 # installs kern.exe to %LOCALAPPDATA%\kern\bin (override with KERN_INSTALL_DIR).
 $ErrorActionPreference = "Stop"
 
-$Repo = "kern-ai/kern"
+$Repo = "GovnocoderAI/kern"
 $Bin = "kern.exe"
 $InstallDir = if ($env:KERN_INSTALL_DIR) { $env:KERN_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "kern\bin" }
 

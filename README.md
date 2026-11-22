@@ -10,7 +10,7 @@ Kern is a fast, open-source coding agent that lives in your terminal. It is buil
  █▄▄█  the core of your terminal
 ```
 
-[![CI](https://github.com/kern-ai/kern/actions/workflows/ci.yml/badge.svg)](https://github.com/kern-ai/kern/actions/workflows/ci.yml)
+[![CI](https://github.com/GovnocoderAI/kern/actions/workflows/ci.yml/badge.svg)](https://github.com/GovnocoderAI/kern/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-FFB000.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.23%2B-22D3EE.svg)](https://go.dev)
 
@@ -43,7 +43,7 @@ Kern is currently in **v0.1 development**. The core agent, providers, tools, per
 Requires Go 1.23 or newer.
 
 ```bash
-git clone https://github.com/kern-ai/kern.git
+git clone https://github.com/GovnocoderAI/kern.git
 cd kern
 go build -ldflags "-s -w" -o bin/kern ./cmd/kern
 ```
@@ -54,12 +54,12 @@ Once releases are published:
 
 ```bash
 # Linux / macOS (WSL)
-curl -fsSL https://raw.githubusercontent.com/kern-ai/kern/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/GovnocoderAI/kern/main/scripts/install.sh | sh
 ```
 
 ```powershell
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/kern-ai/kern/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/GovnocoderAI/kern/main/scripts/install.ps1 | iex
 ```
 
 ## Quick start

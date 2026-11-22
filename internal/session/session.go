@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kern-ai/kern/internal/provider"
-	"github.com/kern-ai/kern/internal/util"
+	"github.com/GovnocoderAI/kern/internal/provider"
+	"github.com/GovnocoderAI/kern/internal/util"
 )
 
 type Session struct {

@@ -3,7 +3,7 @@ package session
 import (
 	"testing"
 
-	"github.com/kern-ai/kern/internal/provider"
+	"github.com/GovnocoderAI/kern/internal/provider"
 )
 
 func TestSaveLoadLatest(t *testing.T) {

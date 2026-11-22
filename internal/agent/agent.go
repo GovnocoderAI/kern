@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kern-ai/kern/internal/permission"
-	"github.com/kern-ai/kern/internal/provider"
-	"github.com/kern-ai/kern/internal/tools"
-	"github.com/kern-ai/kern/internal/ui"
-	"github.com/kern-ai/kern/internal/util"
+	"github.com/GovnocoderAI/kern/internal/permission"
+	"github.com/GovnocoderAI/kern/internal/provider"
+	"github.com/GovnocoderAI/kern/internal/tools"
+	"github.com/GovnocoderAI/kern/internal/ui"
+	"github.com/GovnocoderAI/kern/internal/util"
 )
 
 type Agent struct {

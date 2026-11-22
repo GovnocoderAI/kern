@@ -3,7 +3,7 @@ package permission
 import (
 	"testing"
 
-	"github.com/kern-ai/kern/internal/config"
+	"github.com/GovnocoderAI/kern/internal/config"
 )
 
 func TestDefaults(t *testing.T) {

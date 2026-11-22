@@ -20,9 +20,9 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/kern-ai/kern/internal/version.Version={{ .Version }}
-      - -X github.com/kern-ai/kern/internal/version.Commit={{ .Commit }}
-      - -X github.com/kern-ai/kern/internal/version.Date={{ .CommitDate }}
+      - -X github.com/GovnocoderAI/kern/internal/version.Version={{ .Version }}
+      - -X github.com/GovnocoderAI/kern/internal/version.Commit={{ .Commit }}
+      - -X github.com/GovnocoderAI/kern/internal/version.Date={{ .CommitDate }}
 
 archives:
   - id: default
@@ -61,5 +61,5 @@ nfpms:
     bindir: /usr/local/bin
     maintainer: Kern Contributors
     description: Fast open-source coding agent for the terminal
-    homepage: https://github.com/kern-ai/kern
+    homepage: https://github.com/GovnocoderAI/kern
     license: Apache-2.0

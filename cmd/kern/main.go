@@ -1,6 +1,6 @@
 package main
 
-import "github.com/kern-ai/kern/internal/cli"
+import "github.com/GovnocoderAI/kern/internal/cli"
 
 func main() {
 	cli.Execute()

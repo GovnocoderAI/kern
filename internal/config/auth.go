@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/kern-ai/kern/internal/util"
+	"github.com/GovnocoderAI/kern/internal/util"
 )
 
 // Auth stores provider credentials. Kern's own auth.json takes precedence over

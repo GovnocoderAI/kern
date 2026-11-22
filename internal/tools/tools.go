@@ -21,7 +21,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/kern-ai/kern/internal/provider"
+	"github.com/GovnocoderAI/kern/internal/provider"
 )
 
 const (

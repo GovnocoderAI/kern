@@ -10,11 +10,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kern-ai/kern/internal/config"
-	"github.com/kern-ai/kern/internal/permission"
-	"github.com/kern-ai/kern/internal/provider"
-	"github.com/kern-ai/kern/internal/tools"
-	"github.com/kern-ai/kern/internal/ui"
+	"github.com/GovnocoderAI/kern/internal/config"
+	"github.com/GovnocoderAI/kern/internal/permission"
+	"github.com/GovnocoderAI/kern/internal/provider"
+	"github.com/GovnocoderAI/kern/internal/tools"
+	"github.com/GovnocoderAI/kern/internal/ui"
 )
 
 type scripted struct {

@@ -3,7 +3,7 @@
 # installs the binary to ~/.local/bin (override with KERN_INSTALL_DIR).
 set -eu
 
-REPO="kern-ai/kern"
+REPO="GovnocoderAI/kern"
 BIN="kern"
 INSTALL_DIR="${KERN_INSTALL_DIR:-$HOME/.local/bin}"
 

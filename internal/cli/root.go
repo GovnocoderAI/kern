@@ -18,15 +18,15 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	"github.com/kern-ai/kern/internal/agent"
-	"github.com/kern-ai/kern/internal/config"
-	"github.com/kern-ai/kern/internal/permission"
-	"github.com/kern-ai/kern/internal/provider"
-	"github.com/kern-ai/kern/internal/session"
-	"github.com/kern-ai/kern/internal/tools"
-	"github.com/kern-ai/kern/internal/ui"
-	"github.com/kern-ai/kern/internal/util"
-	"github.com/kern-ai/kern/internal/version"
+	"github.com/GovnocoderAI/kern/internal/agent"
+	"github.com/GovnocoderAI/kern/internal/config"
+	"github.com/GovnocoderAI/kern/internal/permission"
+	"github.com/GovnocoderAI/kern/internal/provider"
+	"github.com/GovnocoderAI/kern/internal/session"
+	"github.com/GovnocoderAI/kern/internal/tools"
+	"github.com/GovnocoderAI/kern/internal/ui"
+	"github.com/GovnocoderAI/kern/internal/util"
+	"github.com/GovnocoderAI/kern/internal/version"
 )
 
 var (
