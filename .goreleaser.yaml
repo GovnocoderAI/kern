@@ -52,6 +52,50 @@ changelog:
       - "^docs:"
       - "^test:"
       - "^chore:"
+      - "^ci:"
+
+# Preview/rc tags are published as GitHub pre-releases automatically, and the
+# release notes come from a hand-written file so the page reads like a
+# changelog rather than a raw commit dump.
+release:
+  prerelease: auto
+  name_template: "Kern {{ .Tag }}"
+  header: |
+    **Kern v0.2** — a fast, open coding agent for the terminal.
+
+    This is a preview build: the core agent, providers, tools, permissions,
+    sessions and the full-screen TUI work end to end, but the surface is still
+    moving and some features are experimental.
+
+    ### Highlights
+
+    - Full-screen TUI with five panels: Chat, Files, Diff, Procs, Skills
+    - Skills — markdown prompts with frontmatter, activated with `--skill` or `/skill`
+    - OpenAI-compatible, Anthropic and Google Gemini providers
+    - Retry with backoff, byte-safe output, symlink-aware workspace sandbox
+    - First-run wizard (`kern init`) for theme, provider, key and model
+    - Four themes: amber, dark, light, blue
+
+    ### Quick start
+
+    ```bash
+    kern init          # choose theme, provider, key and model
+    kern               # open the TUI
+    kern "summarise this repo"   # one-shot, non-interactive
+    ```
+
+  footer: |
+    ## Install
+
+    Download the archive for your platform above, or use the installer:
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/GovnocoderAI/kern/main/scripts/install.sh | sh
+    ```
+
+    ```powershell
+    irm https://raw.githubusercontent.com/GovnocoderAI/kern/main/scripts/install.ps1 | iex
+    ```
 
 nfpms:
   - id: packages
