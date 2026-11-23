@@ -40,8 +40,11 @@ type Agent struct {
 	UI         *ui.Console
 	Observer   Observer
 	MaxSteps   int
-	History    []provider.Message
-	Usage      provider.Usage
+	// TokenBudget, when > 0, stops the loop once total usage exceeds it.
+	// Used to bound sub-agent runs.
+	TokenBudget int
+	History     []provider.Message
+	Usage       provider.Usage
 }
 
 // RunInput is the input to one agent turn.
@@ -84,6 +87,9 @@ func (a *Agent) Run(ctx context.Context, in RunInput) error {
 	for step := 0; step < a.MaxSteps; step++ {
 		if err := ctx.Err(); err != nil {
 			return kerr.Cancelled()
+		}
+		if a.TokenBudget > 0 && a.Usage.TotalTokens >= a.TokenBudget {
+			return kerr.User("token budget of %d exhausted after %d tokens", a.TokenBudget, a.Usage.TotalTokens)
 		}
 		req := provider.Request{
 			Model:    a.Model,
@@ -254,7 +260,9 @@ func (a *Agent) emitText(delta string) {
 		a.Observer.OnText(delta)
 		return
 	}
-	a.UI.AssistantDelta(delta)
+	if a.UI != nil {
+		a.UI.AssistantDelta(delta)
+	}
 }
 
 func (a *Agent) emitStepDone() {
@@ -262,7 +270,9 @@ func (a *Agent) emitStepDone() {
 		a.Observer.OnStepDone()
 		return
 	}
-	a.UI.AssistantEnd()
+	if a.UI != nil {
+		a.UI.AssistantEnd()
+	}
 }
 
 func (a *Agent) emitToolStart(name, summary string) {
@@ -270,7 +280,9 @@ func (a *Agent) emitToolStart(name, summary string) {
 		a.Observer.OnToolStart(name, summary)
 		return
 	}
-	a.UI.ToolStart(name, summary)
+	if a.UI != nil {
+		a.UI.ToolStart(name, summary)
+	}
 }
 
 func (a *Agent) emitToolResult(name string, ok bool, output string) {
@@ -278,13 +290,26 @@ func (a *Agent) emitToolResult(name string, ok bool, output string) {
 		a.Observer.OnToolResult(name, ok, output)
 		return
 	}
-	a.UI.ToolResult(name, ok, output)
+	if a.UI != nil {
+		a.UI.ToolResult(name, ok, output)
+	}
 }
 
 func (a *Agent) emitUsage(usage provider.Usage) {
 	if a.Observer != nil {
 		a.Observer.OnUsage(usage)
 	}
+}
+
+// FinalText returns the text of the most recent assistant message, used to
+// return a sub-agent's answer to its caller.
+func (a *Agent) FinalText() string {
+	for i := len(a.History) - 1; i >= 0; i-- {
+		if a.History[i].Role == provider.RoleAssistant {
+			return a.History[i].Text()
+		}
+	}
+	return ""
 }
 
 func (a *Agent) execute(ctx context.Context, call provider.ToolCall) (string, bool) {
@@ -359,7 +384,10 @@ func BuildSystemPrompt(workdir string, extraInstructions []string) string {
 	b.WriteString("- Use the provided tools to read, edit, search and run commands.\n")
 	b.WriteString("- Never invent file contents; always read first.\n")
 	b.WriteString("- Keep changes minimal and focused. Do not add comments unless asked.\n")
-	b.WriteString("- When a task is complete, summarize what changed and how it was verified.\n\n")
+	b.WriteString("- When a task is complete, summarize what changed and how it was verified.\n")
+	b.WriteString("- For non-trivial work, delegate with the task tool: \"plan\" to design, \"build\" to\n")
+	b.WriteString("  implement, \"test\" to run checks, \"review\" to critique. Each sub-agent has an\n")
+	b.WriteString("  isolated context, so give it everything it needs in the prompt.\n\n")
 	b.WriteString(fmt.Sprintf("Environment:\n- OS: %s/%s\n- Workspace: %s\n- Shell: %s\n- Date: %s\n\n",
 		runtime.GOOS, runtime.GOARCH, workdir, shellName(), time.Now().Format("2006-01-02")))
 

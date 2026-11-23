@@ -103,6 +103,10 @@ type Config struct {
 	Permissions  []PermissionRule
 	Instructions []string
 	Sources      []string
+	// External lists credentials discovered from other tools (opencode is
+	// read as a normal config source; this covers Codex, Continue, Gemini CLI,
+	// Aider and .env files). It is lowest precedence.
+	External []ExternalCred
 }
 
 // Load discovers and merges every configuration file relevant to workdir.
@@ -123,6 +127,19 @@ func Load(workdir string) (*Config, error) {
 		}
 		cfg.merge(fc)
 		cfg.Sources = append(cfg.Sources, path)
+	}
+
+	// Lowest precedence: credentials discovered from other CLIs. A provider
+	// is only added when the user has not configured one with that id, so an
+	// explicit kern.json / opencode.json always wins.
+	cfg.External = DiscoverExternal(abs)
+	for _, ec := range cfg.External {
+		if _, ok := cfg.Providers[ec.ProviderID]; ok {
+			continue
+		}
+		p := &Provider{ID: ec.ProviderID, KindOverride: ec.Kind, Models: map[string]Model{}}
+		p.Options.BaseURL = ec.BaseURL
+		cfg.Providers[ec.ProviderID] = p
 	}
 	return cfg, nil
 }
@@ -442,6 +459,12 @@ func (c *Config) APIKey(providerID string, auth *Auth) string {
 	if auth != nil {
 		if k, ok := auth.Get(providerID); ok && k != "" {
 			return k
+		}
+	}
+	// Keys discovered from other CLIs (Codex, Continue, Gemini CLI, Aider, .env).
+	for _, ec := range c.External {
+		if ec.ProviderID == providerID && ec.Key != "" {
+			return ec.Key
 		}
 	}
 	kind := "openai"

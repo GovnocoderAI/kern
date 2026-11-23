@@ -3,13 +3,16 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/GovnocoderAI/kern/internal/agent"
+	"github.com/GovnocoderAI/kern/internal/agents"
 	"github.com/GovnocoderAI/kern/internal/config"
 	"github.com/GovnocoderAI/kern/internal/permission"
 	"github.com/GovnocoderAI/kern/internal/provider"
@@ -21,6 +24,7 @@ import (
 type Options struct {
 	Workdir     string
 	Model       string
+	Agent       string
 	SessionID   string
 	Continue    bool
 	Fork        bool
@@ -106,6 +110,29 @@ func New(opts Options) (*App, error) {
 	perms := permission.New(cfg.Permissions, opts.Auto, prompt)
 	registry := tools.NewRegistry(abs, cfg.Shell)
 	system := agent.BuildSystemPrompt(abs, cfg.Instructions)
+
+	// If a role was selected, run as that role instead of the orchestrator:
+	// apply its system prompt, tool subset and read-only constraint.
+	if opts.Agent != "" {
+		role, ok := agents.Get(opts.Agent)
+		if !ok {
+			return nil, fmt.Errorf("unknown agent role %q (known: %s)", opts.Agent, strings.Join(agents.Names(), ", "))
+		}
+		system += "\n\n" + role.SystemPrompt
+		var names []string
+		for _, n := range registry.Names() {
+			if n != "task" && role.AllowsTool(n) {
+				names = append(names, n)
+			}
+		}
+		registry = registry.Subset(names)
+		if role.ReadOnly {
+			rules := append([]config.PermissionRule(nil), cfg.Permissions...)
+			rules = append(rules, config.PermissionRule{Action: "edit", Resource: "*", Effect: "deny"})
+			perms = permission.New(rules, opts.Auto, prompt)
+		}
+	}
+
 	ag := agent.New(prov, pid, mid, system, registry, perms, console)
 	ag.Observer = opts.Observer
 	ag.History = sess.Messages
@@ -114,7 +141,7 @@ func New(opts Options) (*App, error) {
 	sess.Model = pid + "/" + mid
 	sess.Workdir = abs
 
-	return &App{
+	app := &App{
 		Config:     cfg,
 		Auth:       auth,
 		Agent:      ag,
@@ -124,7 +151,10 @@ func New(opts Options) (*App, error) {
 		ProviderID: pid,
 		ModelID:    mid,
 		Workdir:    abs,
-	}, nil
+	}
+	// Enable delegation: the orchestrator's task tool calls back into runSubagent.
+	registry.Env().Subagent = app.runSubagent
+	return app, nil
 }
 
 func (a *App) Sync() {
@@ -160,4 +190,79 @@ func (a *App) RebuildModel(ref string) error {
 // process history for the UI.
 func (a *App) Tools() *tools.Registry {
 	return a.Agent.Tools
+}
+
+// runSubagent runs an isolated role with a bounded budget and returns its
+// condensed answer. It is wired into the task tool so the orchestrator can
+// delegate without carrying the sub-agent's whole transcript.
+func (a *App) runSubagent(ctx context.Context, req tools.SubagentRequest) (*tools.SubagentResult, error) {
+	role, ok := agents.Get(req.Role)
+	if !ok {
+		return nil, fmt.Errorf("unknown role %q (known: %s)", req.Role, strings.Join(agents.Names(), ", "))
+	}
+
+	maxSteps := role.MaxSteps
+	if req.Budget.MaxSteps > 0 {
+		maxSteps = req.Budget.MaxSteps
+	}
+	maxTokens := req.Budget.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = role.MaxTokens
+	}
+
+	// Tools: a subset for the role, always excluding task itself so a
+	// sub-agent cannot recurse without bound.
+	var names []string
+	for _, n := range a.Agent.Tools.Names() {
+		if n == "task" {
+			continue
+		}
+		if role.AllowsTool(n) {
+			names = append(names, n)
+		}
+	}
+	reg := a.Agent.Tools.Subset(names)
+
+	// Permissions: a read-only role gets an explicit deny for edits. Sub-agents
+	// run non-interactively, so asks auto-approve; explicit deny still wins.
+	rules := append([]config.PermissionRule(nil), a.Config.Permissions...)
+	if role.ReadOnly {
+		rules = append(rules, config.PermissionRule{Action: "edit", Resource: "*", Effect: "deny"})
+	}
+	perms := permission.New(rules, true, nil)
+
+	system := agent.BuildSystemPrompt(a.Workdir, a.Config.Instructions)
+	system += "\n\n" + role.SystemPrompt
+
+	sub := agent.New(a.Agent.Provider, a.ProviderID, a.ModelID, system, reg, perms, nil)
+	sub.MaxSteps = maxSteps
+	sub.TokenBudget = maxTokens
+
+	runCtx := ctx
+	timeout := req.Budget.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	runErr := sub.Run(runCtx, agent.RunInput{Text: req.Prompt})
+
+	res := &tools.SubagentResult{
+		Output: sub.FinalText(),
+		Usage:  sub.Usage,
+		Role:   role.Name,
+	}
+	for _, m := range sub.History {
+		if m.Role == provider.RoleAssistant {
+			res.Steps++
+		}
+	}
+	if strings.TrimSpace(res.Output) == "" {
+		res.Output = "(no output)"
+	}
+	if runErr != nil {
+		return res, fmt.Errorf("%s role stopped: %w", role.Name, runErr)
+	}
+	return res, nil
 }

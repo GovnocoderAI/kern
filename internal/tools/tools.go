@@ -74,6 +74,10 @@ type Env struct {
 	Workdir string
 	Shell   string
 
+	// Subagent, when set, lets the task tool delegate work to an isolated
+	// sub-agent run. The app package wires this to the multi-agent engine.
+	Subagent SubagentRunner
+
 	mu        sync.Mutex
 	Todos     []Todo
 	Changes   []Change
@@ -187,7 +191,7 @@ func NewRegistry(workdir, shell string) *Registry {
 	for _, t := range []Tool{
 		&ReadTool{}, &WriteTool{}, &EditTool{}, &BashTool{},
 		&GrepTool{}, &GlobTool{}, &LsTool{}, &TodoTool{}, &WebFetchTool{},
-		&ProcessTool{}, &JokeTool{},
+		&ProcessTool{}, &JokeTool{}, &TaskTool{},
 	} {
 		r.tools[t.Name()] = t
 		r.order = append(r.order, t.Name())
@@ -198,6 +202,26 @@ func NewRegistry(workdir, shell string) *Registry {
 func (r *Registry) Env() *Env { return r.env }
 
 func (r *Registry) Names() []string { return append([]string(nil), r.order...) }
+
+// Has reports whether the registry exposes a tool with the given name.
+func (r *Registry) Has(name string) bool {
+	_, ok := r.tools[name]
+	return ok
+}
+
+// Subset returns a new registry that shares this registry's Env but exposes
+// only the named tools (in the given order). Names that do not exist are
+// skipped. A nil names slice yields an empty registry.
+func (r *Registry) Subset(names []string) *Registry {
+	out := &Registry{tools: map[string]Tool{}, env: r.env}
+	for _, name := range names {
+		if t, ok := r.tools[name]; ok {
+			out.tools[name] = t
+			out.order = append(out.order, name)
+		}
+	}
+	return out
+}
 
 func (r *Registry) Defs() []provider.ToolDef {
 	defs := make([]provider.ToolDef, 0, len(r.order))
@@ -229,7 +253,7 @@ func Action(name string) string {
 		return "shell"
 	case "webfetch":
 		return "webfetch"
-	case "process", "joke":
+	case "process", "joke", "task":
 		return "read"
 	default:
 		return "read"

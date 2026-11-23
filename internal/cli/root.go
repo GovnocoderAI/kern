@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/GovnocoderAI/kern/internal/agent"
+	"github.com/GovnocoderAI/kern/internal/agents"
 	appcore "github.com/GovnocoderAI/kern/internal/app"
 	"github.com/GovnocoderAI/kern/internal/config"
 	"github.com/GovnocoderAI/kern/internal/provider"
@@ -35,6 +36,7 @@ import (
 var (
 	flagModel string
 	flagAuto  bool
+	flagAgent string
 
 	flagContinue bool
 	flagSession  string
@@ -110,6 +112,7 @@ func init() {
 	pf.StringVar(&flagPrompt, "prompt", "", "prompt to use")
 	pf.BoolVar(&flagMini, "mini", false, "start the minimal interface")
 	pf.StringVar(&flagSkill, "skill", "", "activate a skill by name for this run")
+	pf.StringVar(&flagAgent, "agent", "", "role to run as: plan, build, test, review (default: orchestrator)")
 
 	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, setupCmd, miniCmd, tuiCmd, statsCmd, agentCmd, skillCmd)
 }
@@ -130,6 +133,7 @@ func cwd() string {
 
 type runtimeOptions struct {
 	model        string
+	agent        string
 	sessionID    string
 	continueLast bool
 	fork         bool
@@ -157,9 +161,14 @@ func newRuntime(workdir string, opts runtimeOptions) (*app, error) {
 	if modelRef == "" {
 		modelRef = flagModel
 	}
+	agentRef := opts.agent
+	if agentRef == "" {
+		agentRef = flagAgent
+	}
 	core, err := appcore.New(appcore.Options{
 		Workdir:     workdir,
 		Model:       modelRef,
+		Agent:       agentRef,
 		SessionID:   opts.sessionID,
 		Continue:    opts.continueLast,
 		Fork:        opts.fork,
@@ -233,6 +242,7 @@ func runTUI(workdir string) error {
 	return tui.Run(appcore.Options{
 		Workdir:   workdir,
 		Model:     flagModel,
+		Agent:     flagAgent,
 		SessionID: flagSession,
 		Continue:  flagContinue,
 		Fork:      flagFork,
@@ -622,6 +632,14 @@ var doctorCmd = &cobra.Command{
 			fmt.Println("git:      not found")
 		}
 		fmt.Printf("tools:    %d built in\n", len(tools.NewRegistry(cwd(), "").Names()))
+
+		if len(cfg.External) > 0 {
+			fmt.Println("discovered credentials (other tools):")
+			for _, ec := range cfg.External {
+				fmt.Printf("  %-10s %-10s %s\n", ec.ProviderID, ec.Tool, ec.Path)
+			}
+		}
+		fmt.Printf("agents:   %s\n", strings.Join(agents.Names(), ", "))
 		return nil
 	},
 }
@@ -872,24 +890,31 @@ var statsCmd = &cobra.Command{
 
 var agentCmd = &cobra.Command{
 	Use:   "agent",
-	Short: "List configured agents",
+	Short: "List agent roles and any configured custom agents",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println("Roles (use with --agent or the task tool):")
+		for _, r := range agents.Defaults {
+			fmt.Println("  " + r.Describe())
+		}
+		fmt.Println()
+		fmt.Println("The orchestrator delegates to these roles through the task tool.")
+
 		cfg, err := config.Load(cwd())
 		if err != nil {
 			return err
 		}
-		if len(cfg.Agents) == 0 {
-			fmt.Println("no custom agents configured (built-in: build)")
-			return nil
-		}
-		ids := make([]string, 0, len(cfg.Agents))
-		for id := range cfg.Agents {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			a := cfg.Agents[id]
-			fmt.Printf("%s  model=%s mode=%s  %s\n", id, a.Model, a.Mode, a.Description)
+		if len(cfg.Agents) > 0 {
+			fmt.Println()
+			fmt.Println("Configured agents (from config):")
+			ids := make([]string, 0, len(cfg.Agents))
+			for id := range cfg.Agents {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			for _, id := range ids {
+				a := cfg.Agents[id]
+				fmt.Printf("  %s  model=%s mode=%s  %s\n", id, a.Model, a.Mode, a.Description)
+			}
 		}
 		return nil
 	},
