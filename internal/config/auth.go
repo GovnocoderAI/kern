@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -35,6 +36,8 @@ func (a *Auth) readInto(path string) {
 	if err != nil {
 		return
 	}
+	// Tolerate a UTF-8 BOM, which Windows editors add.
+	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
 	var entries map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &entries); err != nil {
 		return

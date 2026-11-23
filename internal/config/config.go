@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -182,6 +183,9 @@ func loadFile(path string) (*fileConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Editors on Windows (Notepad, PowerShell) often prepend a UTF-8 BOM,
+	// which JSON parsers reject. Strip it before parsing.
+	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
 	standard, err := hujson.Standardize(raw)
 	if err != nil {
 		return nil, fmt.Errorf("invalid JSONC: %w", err)

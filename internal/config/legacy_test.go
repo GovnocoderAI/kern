@@ -74,3 +74,22 @@ func TestCurrentConfigBeatsLegacy(t *testing.T) {
 		t.Fatalf("model = %q, want current/model", cfg.Model)
 	}
 }
+
+// TestConfigWithBOM verifies that a config file saved with a UTF-8 BOM (as
+// Windows Notepad and PowerShell do) still loads.
+func TestConfigWithBOM(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kern.json")
+	body := []byte(`{"model":"x/y"}`)
+	withBOM := append([]byte{0xEF, 0xBB, 0xBF}, body...)
+	if err := os.WriteFile(path, withBOM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fc, err := loadFile(path)
+	if err != nil {
+		t.Fatalf("loadFile with BOM: %v", err)
+	}
+	if fc.Model != "x/y" {
+		t.Fatalf("model = %q, want x/y", fc.Model)
+	}
+}
