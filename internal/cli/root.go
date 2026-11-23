@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -23,6 +24,7 @@ import (
 	appcore "github.com/GovnocoderAI/kern/internal/app"
 	"github.com/GovnocoderAI/kern/internal/config"
 	"github.com/GovnocoderAI/kern/internal/provider"
+	"github.com/GovnocoderAI/kern/internal/server"
 	"github.com/GovnocoderAI/kern/internal/session"
 	"github.com/GovnocoderAI/kern/internal/setup"
 	"github.com/GovnocoderAI/kern/internal/skill"
@@ -114,7 +116,7 @@ func init() {
 	pf.StringVar(&flagSkill, "skill", "", "activate a skill by name for this run")
 	pf.StringVar(&flagAgent, "agent", "", "role to run as: plan, build, test, review (default: orchestrator)")
 
-	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, setupCmd, miniCmd, tuiCmd, statsCmd, agentCmd, skillCmd)
+	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, setupCmd, miniCmd, tuiCmd, serveCmd, desktopCmd, statsCmd, agentCmd, skillCmd)
 }
 
 func isTTY() bool {
@@ -261,6 +263,101 @@ var tuiCmd = &cobra.Command{
 		}
 		return runTUI(workdir)
 	},
+}
+
+// ---- serve / desktop ----
+
+var (
+	flagServePort    int
+	flagServeHost    string
+	flagServeOpen    bool
+	flagServeNoToken bool
+)
+
+var serveCmd = &cobra.Command{
+	Use:   "serve [project]",
+	Short: "Serve the session over HTTP/SSE for the web UI",
+	Long: "Start a local HTTP server that streams turns over Server-Sent Events.\n" +
+		"Prints a URL with an auth token; open it in a browser.",
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		workdir := "."
+		if len(args) == 1 {
+			workdir = args[0]
+		}
+		return runServe(workdir, flagServeOpen)
+	},
+}
+
+var desktopCmd = &cobra.Command{
+	Use:   "desktop [project]",
+	Short: "Serve and open the UI in an app window",
+	Long: "Start the local server and open the web UI in a browser app window\n" +
+		"(Edge/Chrome app mode), falling back to the default browser.",
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		workdir := "."
+		if len(args) == 1 {
+			workdir = args[0]
+		}
+		return runServe(workdir, true)
+	},
+}
+
+func runServe(workdir string, open bool) error {
+	abs, err := filepath.Abs(workdir)
+	if err != nil {
+		return err
+	}
+	token := ""
+	if !flagServeNoToken {
+		token = server.NewToken()
+	}
+	addr := fmt.Sprintf("%s:%d", flagServeHost, flagServePort)
+	srv, err := server.New(server.Options{
+		App: appcore.Options{
+			Workdir: abs,
+			Model:   flagModel,
+			Agent:   flagAgent,
+			Auto:    flagAuto,
+		},
+		Token: token,
+		Addr:  addr,
+	})
+	if err != nil {
+		return err
+	}
+	defer srv.Close()
+
+	url, err := srv.Listen()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("kern serve listening\n  %s\n", url)
+	fmt.Println("press ctrl+c to stop")
+
+	if open {
+		if err := openBrowser(url); err != nil {
+			fmt.Fprintf(os.Stderr, "kern: could not open a window: %v\n", err)
+			fmt.Println("open the URL above in your browser.")
+		}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	<-ctx.Done()
+	fmt.Println("\nbye")
+	return nil
+}
+
+func init() {
+	serveCmd.Flags().IntVar(&flagServePort, "port", 0, "port to listen on (0 = random)")
+	serveCmd.Flags().StringVar(&flagServeHost, "host", "127.0.0.1", "host to bind")
+	serveCmd.Flags().BoolVar(&flagServeOpen, "open", false, "open the UI in a browser")
+	serveCmd.Flags().BoolVar(&flagServeNoToken, "no-token", false, "disable the auth token (localhost only)")
+	desktopCmd.Flags().IntVar(&flagServePort, "port", 0, "port to listen on (0 = random)")
+	desktopCmd.Flags().StringVar(&flagServeHost, "host", "127.0.0.1", "host to bind")
+	desktopCmd.Flags().BoolVar(&flagServeNoToken, "no-token", false, "disable the auth token (localhost only)")
 }
 
 // ---- interactive ----

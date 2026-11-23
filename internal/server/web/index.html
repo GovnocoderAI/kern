@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kern</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">K E R N</div>
+    <div class="spacer"></div>
+    <select id="model" title="model"></select>
+    <select id="agent" title="role">
+      <option value="">orchestrator</option>
+    </select>
+    <button id="newSession" title="new session">+ Session</button>
+  </header>
+
+  <aside id="sidebar">
+    <div class="side-title">SESSIONS</div>
+    <ul id="sessions"></ul>
+    <div class="side-foot" id="workdir"></div>
+  </aside>
+
+  <main id="chat" aria-live="polite"></main>
+
+  <footer id="composer">
+    <textarea id="input" rows="2" placeholder="Ask Kern…  (Enter to send, Shift+Enter for newline)"></textarea>
+    <button id="send">Send</button>
+  </footer>
+
+  <div id="perm" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-title">Permission required</div>
+      <div class="modal-body">
+        <div id="perm-action"></div>
+        <code id="perm-resource"></code>
+      </div>
+      <div class="modal-actions">
+        <button id="perm-deny" class="danger">Deny</button>
+        <button id="perm-always">Always allow</button>
+        <button id="perm-allow" class="primary">Allow</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
