@@ -10,21 +10,30 @@ configuration files.
 
 ## Status
 
-Kern is in **v0.2 development**: the core agent, providers, tools, permissions,
-sessions and console UI work end to end; a full-screen TUI is in progress; the
-headless server, web UI, role-based agents, LSP, plugins and MCP are on the
+Kern is in **v0.2**: the core agent, providers, tools, permissions, sessions,
+the full-screen TUI, multi-agent roles, a local HTTP/SSE server, a web UI and a
+desktop launcher all work end to end. LSP, plugins and MCP are on the
 [roadmap](docs/ROADMAP.md).
 
 ## Features
 
-- Streaming chat with **OpenAI-compatible** and **Anthropic** providers.
-- Built-in tools: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `ls`, `todo`, `webfetch`.
+- Streaming chat with **OpenAI-compatible**, **Anthropic** and **Google Gemini** providers.
+- Built-in tools: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `ls`, `todo`,
+  `webfetch`, `process`, `joke`, plus `task` for delegation.
+- **Multi-agent roles**: `plan` (read-only), `build`, `test`, `review`. The
+  orchestrator delegates through the `task` tool with isolated context and
+  token/step budgets; `--agent <role>` runs as a role directly.
 - Permission model: `allow` / `ask` / `deny` rules, workspace sandbox, `--auto` mode.
 - Sessions: resume with `-c`, target with `-s`, fork, list, export and import.
-- Console and full-screen TUI (the TUI is not yet released; use `kern mini` for the line interface).
-- `kern run` for scripts and CI.
+- **Three front ends**: full-screen TUI, `kern run` for scripts, and a local
+  **web UI** served over HTTP/SSE (`kern serve`) with a **desktop** launcher
+  (`kern desktop`) that opens it in an app window.
+- **Skills**: markdown prompts with frontmatter, activated with `--skill` or `/skill`.
+- **Credential discovery**: keys are read from Kern and opencode config, and also
+  discovered from `.env` files, Codex, Continue, Gemini CLI and Aider.
 - Reads `opencode.json` / `opencode.jsonc` and `kern.json` / `kern.jsonc` without migration,
   with `{env:NAME}` and `{file:path}` substitution.
+- Four themes (amber, dark, light, blue) chosen in the first-run wizard.
 
 ## Install
 
@@ -78,7 +87,8 @@ Inside an interactive session:
 Kern loads, from lowest to highest precedence:
 
 1. System config (`%ProgramData%\opencode`, `%ProgramData%\kern`, `/etc/opencode`, `/etc/kern`).
-2. Global config (`~/.config/opencode/opencode.json[c]`, `~/.config/kern/kern.json[c]`).
+2. Global config (`~/.config/opencode/opencode.json[c]`, `~/.kern/config/kern.json[c]`);
+   the older `~/.config/kern` is still read as a lower-precedence fallback.
 3. Project config (`opencode.json[c]`, `kern.json[c]`, `.opencode/`, `.kern/`) from the filesystem root down to your working directory.
 
 ```jsonc
@@ -99,7 +109,7 @@ Kern loads, from lowest to highest precedence:
 }
 ```
 
-Overlay anything with `~/.config/kern/kern.json` or a project-level `kern.json`:
+Overlay anything with `~/.kern/config/kern.json` or a project-level `kern.json`:
 
 ```jsonc
 {
@@ -113,12 +123,21 @@ Overlay anything with `~/.config/kern/kern.json` or a project-level `kern.json`:
 
 ### Credentials
 
-Keys are resolved in this order:
+Keys are resolved in this order (first match wins):
 
-1. `apiKey` in the provider config.
-2. `~/.config/kern/auth.json` (created by `kern auth set`).
+1. `apiKey` in the provider config (`kern.json` / `opencode.json`).
+2. `~/.kern/config/auth.json` (created by `kern auth set`).
 3. opencode's `~/.local/share/opencode/auth.json`.
-4. Environment variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `<PROVIDER>_API_KEY`.
+4. **Discovered from other tools** (lowest precedence): project and home `.env`
+   files, OpenAI Codex (`~/.codex/auth.json`), Continue
+   (`~/.continue/config.json`), Gemini CLI (`~/.gemini`), and Aider
+   (`~/.aider.conf.yml`). A bare `<NAME>_API_KEY` from a known provider
+   (`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, …) also becomes a
+   ready-to-use provider.
+5. Environment variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+   `GEMINI_API_KEY`, `<PROVIDER>_API_KEY`.
+
+`kern doctor` lists every discovered credential and where it came from.
 
 ```bash
 kern auth set plusvibe sk-...   # stored with 0600 permissions
@@ -131,22 +150,54 @@ kern auth remove plusvibe
 | Command | Description |
 | --- | --- |
 | `kern [project]` | Start the session (full-screen TUI where available) |
+| `kern "prompt"` | Run one prompt non-interactively and print the answer |
 | `kern mini [project]` | Start the minimal line interface |
 | `kern tui [project]` | Start the full-screen terminal interface |
+| `kern serve [project]` | Serve the session over HTTP/SSE (`--port`, `--open`) |
+| `kern desktop [project]` | Serve and open the UI in an app window |
 | `kern run [message..]` | Run one prompt non-interactively |
 | `kern models [provider]` | List models (`--remote` fetches from the provider) |
 | `kern config path\|show\|validate` | Inspect resolved configuration |
-| `kern doctor` | Check environment, config, providers and keys |
+| `kern doctor` | Check environment, config, providers, keys and roles |
 | `kern auth set\|list\|remove` | Manage provider credentials |
 | `kern session list\|show\|delete\|export\|import` | Manage saved sessions |
 | `kern stats` | Token usage across sessions |
-| `kern agent` | List configured agents |
+| `kern agent` | List agent roles (plan/build/test/review) and custom agents |
+| `kern skill list\|validate` | List and validate skills |
+| `kern setup` / `kern init` | First-run wizard: theme, provider, key, model |
 | `kern completion <shell>` | Generate shell completion |
-| `kern init` | Create a starter `kern.json` |
 
 ### Global flags
 
-`-m/--model`, `-c/--continue`, `-s/--session`, `--fork`, `--prompt`, `--auto`, `--mini`.
+`-m/--model`, `--agent <role>`, `-c/--continue`, `-s/--session`, `--fork`,
+`--prompt`, `--auto`, `--mini`, `--skill`.
+
+## Multi-agent roles
+
+The orchestrator can delegate work to focused sub-agents through the `task`
+tool. Each sub-agent runs with an isolated context and a bounded budget, and
+returns only its condensed result, so the main conversation stays small.
+
+| Role | Access | Steps | Purpose |
+| --- | --- | --- | --- |
+| `plan` | read-only | 15 | Inspect the repo and propose an ordered plan |
+| `build` | read-write | 40 | Implement the smallest correct change |
+| `test` | commands | 20 | Run tests and linters, report failures |
+| `review` | read-only | 15 | Critique diffs for bugs and style |
+
+Run as a role directly with `kern --agent plan "..."`, or let the orchestrator
+delegate by calling `task` with a role and a self-contained prompt.
+
+## Web UI and desktop
+
+```bash
+kern serve --port 8080 --open   # local server, prints a tokenised URL
+kern desktop                    # opens the UI in an app window
+```
+
+The server streams turns over Server-Sent Events and requires the token it
+prints (Bearer header or `?token=`) unless started with `--no-token`. The web
+UI is embedded in the binary, so there is nothing to build or install.
 
 ## Permissions
 

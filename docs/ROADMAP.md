@@ -24,26 +24,23 @@ Kern aims to be a fast, open, production-grade coding agent for the terminal.
 - [x] CI on Go 1.27, `go test -race` on Linux, six-target cross-compile.
 - [x] First preview release and installer scripts.
 
-## v0.2.x — surfaces (next)
+## v0.2.x — surfaces (done)
+
+- [x] Headless server (`kern serve`, HTTP/SSE events, token auth).
+- [x] Web UI (embedded, no build step, SSE streaming, permission modal).
+- [x] Desktop launcher (`kern desktop`) opening the web UI in an app window.
+- [x] Multi-agent roles: plan (read-only), build, test, review.
+- [x] `task` tool: isolated subagent context with token/step/time budgets.
+- [x] Credential discovery from opencode, `.env`, Codex, Continue, Gemini CLI, Aider.
+
+## v0.3 — depth
 
 - [ ] Context compaction (summarize old turns, keep recent ones).
-- [ ] Headless server (`kern serve`, HTTP/SSE events, token auth) and `kern attach`.
-- [ ] Web UI (Vite + TypeScript, embedded into the binary).
-- [ ] Desktop app (Wails v2 shell around the same web UI, Windows + Linux).
-
-## v0.3 — multi-agent
-
-- [ ] Role presets: plan (read-only), build, test, review.
-- [ ] `task` tool: isolated subagent context with token/step/time budgets.
-- [ ] Plan → build → test loop with bounded iterations.
+- [ ] Plan → build → test loop with bounded iterations and automatic retry.
 - [ ] MCP servers (`kern mcp`).
-
-## v0.4 — depth
-
 - [ ] LSP integration (diagnostics, hover, references).
+- [ ] Native Wails desktop build (bundled window, no external browser).
 - [ ] Plugin API (WASM or JSON-RPC subprocess).
-- [ ] Git worktrees and PR workflows.
-- [ ] Diff review UI and snapshots/undo.
 
 ## v1.0 — production
 
