@@ -22,8 +22,10 @@ type authEntry struct {
 // LoadAuth reads Kern and opencode credential stores.
 func LoadAuth() *Auth {
 	a := &Auth{keys: map[string]string{}}
-	// opencode first (lower precedence).
+	// Lowest precedence first: opencode, then the v0.1 Kern location, then
+	// the current one so the newest key wins.
 	a.readInto(filepath.Join(util.OpencodeDataDir(), "auth.json"))
+	a.readInto(filepath.Join(util.KernLegacyConfigDir(), "auth.json"))
 	a.readInto(filepath.Join(util.KernConfigDir(), "auth.json"))
 	return a
 }

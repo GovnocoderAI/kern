@@ -83,7 +83,7 @@ Kern loads, from lowest to highest precedence:
 
 ```jsonc
 {
-  "model": "plusvibe/[REDACTED].5",
+  "model": "plusvibe/claude-opus-5.5",
   "provider": {
     "plusvibe": {
       "npm": "@ai-sdk/openai-compatible",
@@ -92,7 +92,7 @@ Kern loads, from lowest to highest precedence:
         "apiKey": "{env:PLUSVIBE_API_KEY}"
       },
       "models": {
-        "[REDACTED].5": { "name": "Claude Opus 5.5", "attachment": true }
+        "claude-opus-5.5": { "name": "Claude Opus 5.5", "attachment": true }
       }
     }
   }
@@ -103,7 +103,7 @@ Overlay anything with `~/.config/kern/kern.json` or a project-level `kern.json`:
 
 ```jsonc
 {
-  "model": "plusvibe/[REDACTED].5",
+  "model": "plusvibe/claude-opus-5.5",
   "permissions": [
     { "action": "shell", "resource": "git push *", "effect": "ask" },
     { "action": "shell", "resource": "rm -rf *", "effect": "deny" }

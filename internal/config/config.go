@@ -148,8 +148,10 @@ func discover(workdir string) []string {
 	addPairs(util.SystemOpencodeConfigDir())
 	addPairs(util.SystemConfigDir())
 
-	// Global user config.
+	// Global user config. The legacy ~/.config/kern location is read first
+	// (lower precedence) so v0.1 installs keep working after the ~/.kern move.
 	addPairs(util.OpencodeConfigDir())
+	addPairs(util.KernLegacyConfigDir())
 	addPairs(util.KernConfigDir())
 
 	// Project configs, from the filesystem root down to the working directory.

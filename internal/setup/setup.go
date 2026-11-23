@@ -5,11 +5,18 @@ package setup
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/GovnocoderAI/kern/internal/config"
+	"github.com/GovnocoderAI/kern/internal/tui"
 	"github.com/GovnocoderAI/kern/internal/util"
 )
 
@@ -22,20 +29,70 @@ type Result struct {
 	CreatedDir bool
 }
 
+// providerPreset describes a built-in provider offered by the wizard.
+type providerPreset struct {
+	ID           string
+	Label        string
+	Kind         string
+	BaseURL      string
+	DefaultModel string
+	KeyHint      string
+	// ModelsEndpoint is appended to BaseURL for a connectivity check.
+	ModelsPath string
+}
+
+var presets = []providerPreset{
+	{
+		ID:           "plusvibe",
+		Label:        "PlusVibe API",
+		Kind:         "openai",
+		BaseURL:      "https://plusvibeapi.ru/v1",
+		DefaultModel: "gemini-4-argon",
+		KeyHint:      "",
+		ModelsPath:   "/models",
+	},
+	{
+		ID:           "openai",
+		Label:        "OpenAI",
+		Kind:         "openai",
+		BaseURL:      "https://api.openai.com/v1",
+		DefaultModel: "gpt-4o",
+		KeyHint:      "sk-...",
+		ModelsPath:   "/models",
+	},
+	{
+		ID:           "anthropic",
+		Label:        "Anthropic",
+		Kind:         "anthropic",
+		BaseURL:      "https://api.anthropic.com",
+		DefaultModel: "claude-opus-4-5",
+		KeyHint:      "",
+		ModelsPath:   "/v1/models",
+	},
+	{
+		ID:           "google",
+		Label:        "Google Gemini",
+		Kind:         "google",
+		BaseURL:      "https://generativelanguage.googleapis.com/v1beta",
+		DefaultModel: "gemini-2.5-pro",
+		KeyHint:      "AIza...",
+		ModelsPath:   "",
+	},
+}
+
 // IsInitialized reports whether Kern has been set up before.
-// It returns true if $KERN_HOME/config/kern.json exists.
 func IsInitialized() bool {
-	path := filepath.Join(util.KernConfigDir(), "kern.json")
-	return util.Exists(path)
+	return util.Exists(filepath.Join(util.KernConfigDir(), "kern.json"))
 }
 
 // Run executes the first-launch wizard on stdin/stdout.
-// It returns the resolved configuration and whether new files were created.
 func Run() (*Result, error) {
-	if IsInitialized() {
-		return &Result{}, nil
-	}
+	return RunWith(os.Stdin, os.Stdout, false)
+}
 
+// RunWith runs the wizard against explicit streams. When checkKey is true the
+// API key is verified with a live request before the config is written.
+func RunWith(in io.Reader, out io.Writer, checkKey bool) (*Result, error) {
 	cfgDir := util.KernConfigDir()
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create %s: %w", cfgDir, err)
@@ -45,80 +102,150 @@ func Run() (*Result, error) {
 	}
 
 	r := &Result{CreatedDir: true}
-	reader := bufio.NewReader(os.Stdin)
+	reader := bufio.NewReader(in)
 
-	fmt.Println("Kern first run")
-	fmt.Println("==============")
-	fmt.Println()
+	fmt.Fprintln(out, "Kern setup")
+	fmt.Fprintln(out, "==========")
+	fmt.Fprintln(out)
 
 	// --- Theme ---
-	fmt.Print("Pick a theme [amber] dark / light / amber / blue: ")
-	theme := readLine(reader, "amber")
-	r.Theme = normalizeTheme(theme)
+	fmt.Fprintf(out, "Theme %s [amber]: ", strings.Join(tui.AvailableThemes(), " / "))
+	r.Theme = normalizeTheme(readLine(reader, "amber"))
 
 	// --- Provider ---
-	fmt.Println()
-	fmt.Print("Pick a provider [plusvibe] plusvibe / openai / anthropic / google: ")
-	prov := readLine(reader, "plusvibe")
-	r.Provider = normalizeProvider(prov)
+	fmt.Fprintln(out)
+	for i, p := range presets {
+		fmt.Fprintf(out, "  %d) %-12s %s\n", i+1, p.ID, p.Label)
+	}
+	fmt.Fprint(out, "Provider [plusvibe]: ")
+	r.Provider = normalizeProvider(readLine(reader, "plusvibe"))
+	p := presetFor(r.Provider)
 
 	// --- API key ---
-	fmt.Println()
-	fmt.Printf("API key for %s (paste, or leave empty to set later): ", r.Provider)
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "API key for %s (%s), or empty to set later: ", r.Provider, p.KeyHint)
 	key := readLine(reader, "")
-	if key != "" {
-		r.APIKey = key
+	if key == "" {
+		fmt.Fprintf(out, "  skipped — add it later with: kern auth set %s <key>\n", r.Provider)
 	} else {
-		// No key yet — note it for later.
-		fmt.Printf("OK, you can add it later with: kern auth set %s <key>\n", r.Provider)
-	}
-
-	// --- Model ---
-	fmt.Println()
-	defaultModel := defaultModelFor(r.Provider)
-	fmt.Printf("Model [%s]: ", defaultModel)
-	model := readLine(reader, defaultModel)
-	r.Model = model
-
-	// --- Write config ---
-	configPath := filepath.Join(cfgDir, "kern.json")
-	content := fmt.Sprintf(`{
-  "model": %q,
-  "theme": %q,
-  "provider": {
-    %q: {
-      "kind": %q
-    }
-  }
-}
-`, r.Model, r.Theme, r.Provider, providerKind(r.Provider))
-	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
-		return nil, fmt.Errorf("write %s: %w", configPath, err)
-	}
-
-	// --- Write auth (if key provided) ---
-	if r.APIKey != "" {
-		if err := writeAuthKey(r.Provider, r.APIKey); err != nil {
-			return nil, fmt.Errorf("write auth.json: %w", err)
+		r.APIKey = key
+		if checkKey {
+			if err := verifyKey(p, key); err != nil {
+				fmt.Fprintf(out, "  warning: key check failed: %v\n", err)
+				fmt.Fprint(out, "  keep it anyway? [Y/n]: ")
+				if strings.EqualFold(strings.TrimSpace(readLine(reader, "y")), "n") {
+					r.APIKey = ""
+				}
+			} else {
+				fmt.Fprintln(out, "  key verified")
+			}
 		}
 	}
 
-	fmt.Println()
-	fmt.Printf("Config:  %s\n", configPath)
-	fmt.Println()
-	fmt.Println("Ready. Run kern to start.")
+	// --- Model ---
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Model [%s]: ", p.DefaultModel)
+	r.Model = r.Provider + "/" + normalizeModel(readLine(reader, p.DefaultModel))
+
+	if err := Write(r); err != nil {
+		return nil, err
+	}
+
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Config: %s\n", filepath.Join(cfgDir, "kern.json"))
+	if r.APIKey != "" {
+		fmt.Fprintf(out, "Key:    %s\n", filepath.Join(cfgDir, "auth.json"))
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Ready. Run `kern` to start.")
 	return r, nil
 }
 
-// RunInteractive is a variant that accepts a provider for the wizard step,
-// useful for testing.
-func RunInteractive(provider string) (*Result, error) {
-	return Run()
+// Write persists the wizard result: kern.json plus auth.json (merged).
+func Write(r *Result) error {
+	if r.Provider == "" {
+		return fmt.Errorf("setup: no provider selected")
+	}
+	p := presetFor(r.Provider)
+
+	// A struct keeps the JSON key order stable and readable.
+	type options struct {
+		BaseURL string `json:"baseURL"`
+	}
+	type providerCfg struct {
+		Name    string  `json:"name"`
+		Kind    string  `json:"kind"`
+		Options options `json:"options"`
+	}
+	type fileCfg struct {
+		Model    string                 `json:"model"`
+		Theme    string                 `json:"theme"`
+		Provider map[string]providerCfg `json:"provider"`
+	}
+	cfg := fileCfg{
+		Model: r.Model,
+		Theme: r.Theme,
+		Provider: map[string]providerCfg{
+			p.ID: {Name: p.Label, Kind: p.Kind, Options: options{BaseURL: p.BaseURL}},
+		},
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(util.KernConfigDir(), "kern.json")
+	if err := os.WriteFile(path, append(raw, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+
+	if r.APIKey != "" {
+		if err := config.SetKey(p.ID, r.APIKey); err != nil {
+			return fmt.Errorf("write auth: %w", err)
+		}
+	}
+	return nil
+}
+
+// verifyKey issues a lightweight authenticated request to the provider.
+func verifyKey(p providerPreset, key string) error {
+	if p.ModelsPath == "" {
+		return nil // provider has no models endpoint we can probe
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	url := strings.TrimRight(p.BaseURL, "/") + p.ModelsPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	switch p.Kind {
+	case "anthropic":
+		req.Header.Set("x-api-key", key)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	case "google":
+		req.Header.Set("x-goog-api-key", key)
+	default:
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 func readLine(r *bufio.Reader, def string) string {
-	line, _ := r.ReadString('\n')
+	line, err := r.ReadString('\n')
 	line = strings.TrimRight(line, "\r\n")
+	if err != nil && line == "" {
+		return def
+	}
 	if line == "" {
 		return def
 	}
@@ -126,68 +253,48 @@ func readLine(r *bufio.Reader, def string) string {
 }
 
 func normalizeTheme(s string) string {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "dark", "light", "amber", "blue", "":
-		if strings.TrimSpace(s) == "" {
-			return "amber"
+	s = strings.ToLower(strings.TrimSpace(s))
+	for _, name := range tui.AvailableThemes() {
+		if s == name {
+			return name
 		}
-		return strings.ToLower(strings.TrimSpace(s))
-	default:
-		return "amber"
 	}
+	return "amber"
 }
 
 func normalizeProvider(s string) string {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "openai", "anthropic", "google", "gemini", "":
-		if strings.TrimSpace(s) == "" {
-			return "plusvibe"
-		}
-		if strings.ToLower(strings.TrimSpace(s)) == "gemini" {
-			return "google"
-		}
-		return strings.ToLower(strings.TrimSpace(s))
-	default:
-		return "plusvibe"
-	}
-}
-
-func providerKind(p string) string {
-	switch p {
-	case "openai":
-		return "openai"
-	case "anthropic":
-		return "anthropic"
-	case "google":
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "gemini" {
 		return "google"
-	default:
-		return "openai"
 	}
+	for _, p := range presets {
+		if s == p.ID {
+			return p.ID
+		}
+	}
+	// Numeric selection, e.g. "2".
+	if n := len(s); n == 1 && s[0] >= '1' && s[0] <= '9' {
+		idx := int(s[0] - '1')
+		if idx < len(presets) {
+			return presets[idx].ID
+		}
+	}
+	return "plusvibe"
 }
 
-func defaultModelFor(p string) string {
-	switch p {
-	case "openai":
-		return "gpt-4o"
-	case "anthropic":
-		return "[REDACTED]"
-	case "google":
-		return "gemini-4-argon"
-	default:
-		return "gemini-4-argon"
+func normalizeModel(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "/"); i > 0 {
+		return s[i+1:]
 	}
+	return s
 }
 
-// writeAuthKey stores the key in $KERN_HOME/config/auth.json.
-func writeAuthKey(providerID, key string) error {
-	authPath := filepath.Join(util.KernConfigDir(), "auth.json")
-	// Simple: write a minimal JSON object.
-	content := fmt.Sprintf(`{
-  %q: %q
-}
-`, providerID, key)
-	if err := os.WriteFile(authPath, []byte(content), 0o600); err != nil {
-		return err
+func presetFor(id string) providerPreset {
+	for _, p := range presets {
+		if p.ID == id {
+			return p
+		}
 	}
-	return nil
+	return presets[0]
 }

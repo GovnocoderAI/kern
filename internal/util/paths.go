@@ -23,9 +23,8 @@ func KernHome() string {
 	return filepath.Join(Home(), ".kern")
 }
 
-// KernConfigDir is where Kern's own configuration lives.
-// It mirrors opencode's ~/.config layout on every platform.
-// KERN_HOME/config wins over ~/.config/kern.
+// KernConfigDir is where Kern writes its own configuration.
+// It is $KERN_CONFIG_DIR, or $KERN_HOME/config, or ~/.kern/config.
 func KernConfigDir() string {
 	if v := os.Getenv("KERN_CONFIG_DIR"); v != "" {
 		return v
@@ -34,6 +33,15 @@ func KernConfigDir() string {
 		return filepath.Join(v, "config")
 	}
 	return filepath.Join(KernHome(), "config")
+}
+
+// KernLegacyConfigDir is the v0.1 location (~/.config/kern). It is still read
+// as a lower-precedence fallback so existing installs keep working.
+func KernLegacyConfigDir() string {
+	if v := os.Getenv("KERN_LEGACY_CONFIG_DIR"); v != "" {
+		return v
+	}
+	return filepath.Join(Home(), ".config", "kern")
 }
 
 // OpencodeConfigDir is the global opencode configuration directory.

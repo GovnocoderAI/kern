@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/GovnocoderAI/kern/internal/agent"
 	appcore "github.com/GovnocoderAI/kern/internal/app"
@@ -247,9 +248,11 @@ func (m *Model) layout(width, height int) {
 		height = 16
 	}
 	m.width, m.height = width, height
+	// Hide the sidebar on narrow terminals so the main pane stays usable.
+	showSidebar := m.sidebarVisible()
 	contentH := m.contentHeight()
 	mainW := width - 4
-	if m.showSidebar {
+	if showSidebar {
 		mainW -= sidebarWidth
 	}
 	if mainW < 20 {
@@ -272,18 +275,21 @@ func (m *Model) layout(width, height int) {
 	}
 }
 
+// bodyHeight is the number of rows available to the body (tabs + content).
+// Fixed rows: header(1) + status(1) + input box(6: 3 textarea + hint + 2
+// border) + tabs(1) = 9. The body content fills whatever is left.
 func (m *Model) bodyHeight() int {
-	h := m.height - 1 - 5 - 1
-	if h < 6 {
-		h = 6
+	h := m.height - 10
+	if h < 3 {
+		h = 3
 	}
 	return h
 }
 
 func (m *Model) contentHeight() int {
-	h := m.bodyHeight() - 1
-	if h < 4 {
-		h = 4
+	h := m.bodyHeight()
+	if h < 3 {
+		h = 3
 	}
 	return h
 }
@@ -313,7 +319,7 @@ func (m *Model) headerView() string {
 
 func (m *Model) bodyView() string {
 	sidebar := ""
-	if m.showSidebar {
+	if m.sidebarVisible() {
 		sidebar = m.sidebarView()
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, m.mainView())
@@ -341,6 +347,24 @@ func (m *Model) sidebarView() string {
 	return box.Render(strings.Join(lines, "\n"))
 }
 
+// sidebarVisible reports whether the sidebar is shown at the current width.
+func (m *Model) sidebarVisible() bool {
+	return m.showSidebar && m.width >= sidebarWidth+40
+}
+
+// mainWidth is the width available to the main pane (tabs, chat, lists),
+// excluding the sidebar and its padding when it is shown.
+func (m *Model) mainWidth() int {
+	w := m.width
+	if m.sidebarVisible() {
+		w -= sidebarWidth
+	}
+	if w < 20 {
+		w = 20
+	}
+	return w
+}
+
 func (m *Model) mainView() string {
 	tabs := m.tabsView()
 	var content string
@@ -364,8 +388,16 @@ func (m *Model) tabsView() string {
 		}
 	}
 	left := " " + strings.Join(parts, "   ")
-	right := sDim.Render("tab focus · ctrl+p commands · ? help ")
-	return fitLine(left, right, m.width)
+	width := m.mainWidth()
+
+	// The tab strip takes priority; the hint is only shown when it fits
+	// alongside the tabs without truncating them.
+	tabsW := ansi.StringWidth(left)
+	hint := sDim.Render(" tab focus · ctrl+p commands · ? help ")
+	if tabsW+ansi.StringWidth(hint)+1 <= width {
+		return left + strings.Repeat(" ", width-tabsW-ansi.StringWidth(hint)) + hint
+	}
+	return truncate(left, width)
 }
 
 func (m *Model) inputView() string {
@@ -456,6 +488,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.focus == focusInput {
 		if msg.String() == "enter" {
 			return m, m.submit()
+		}
+		// With an empty prompt, digits switch panels (1 Chat … 5 Skills),
+		// so the tab strip is reachable without leaving the input.
+		if m.input.Value() == "" && !m.running {
+			if s := msg.String(); len(s) == 1 && s[0] >= '1' && s[0] <= '5' {
+				return m.handleMainKey(msg)
+			}
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
@@ -922,7 +961,10 @@ func (m *Model) chatContent() string {
 		b.WriteString(m.renderEntry(e))
 	}
 	if b.Len() == 0 {
-		return sDim.Render("  Ask Kern to inspect the repo, edit files or run commands.\n  Use ctrl+p for the command palette and 2/3/4 for files, diffs and processes.")
+		return sDim.Render("Ask Kern to inspect the repo, edit files or run commands.\n\n" +
+			"  ctrl+p   command palette\n" +
+			"  1 … 5    switch panels (Chat, Files, Diff, Procs, Skills)\n" +
+			"  /skill   list or activate a skill")
 	}
 	return b.String()
 }
@@ -954,10 +996,7 @@ func (m *Model) renderEntry(e entry) string {
 }
 
 func (m *Model) renderMarkdown(text string) string {
-	width := m.width - 40
-	if m.showSidebar {
-		width -= sidebarWidth
-	}
+	width := m.mainWidth() - 8
 	if width < 40 {
 		width = 40
 	}
@@ -1138,6 +1177,7 @@ func (m *Model) modalView() string {
 const helpBody = `Navigation
   tab / shift+tab   cycle focus: input → main → sidebar
   1 2 3 4 5         Chat · Files · Diff · Procs · Skills
+                    (also switches panels from an empty prompt)
   j / k, ↑ / ↓      move or scroll
   g / G             top / bottom
   enter             send (input) or open (files)

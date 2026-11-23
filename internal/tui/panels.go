@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/pmezard/go-difflib/difflib"
 
 	"github.com/GovnocoderAI/kern/internal/tools"
@@ -359,19 +359,43 @@ func colorizeDiff(diff string) string {
 	return b.String()
 }
 
+// truncate shortens s to at most width display cells, measuring the visible
+// text only so ANSI color sequences do not count against the budget.
 func truncate(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	return runewidth.Truncate(s, width, "…")
+	if ansi.StringWidth(s) <= width {
+		return s
+	}
+	return ansi.Truncate(s, width, "…")
 }
 
+// fitLine lays out a left and a right segment on one line no wider than width.
+// Both sides are truncated as needed so the result never overflows.
 func fitLine(left, right string, width int) string {
-	lw := lipgloss.Width(left)
-	rw := lipgloss.Width(right)
-	if lw+rw+1 > width && width > rw+2 {
-		left = truncate(left, width-rw-1)
-		lw = lipgloss.Width(left)
+	if width <= 0 {
+		return ""
+	}
+	rw := ansi.StringWidth(right)
+	lw := ansi.StringWidth(left)
+
+	if rw >= width {
+		return truncate(right, width)
+	}
+	if lw+rw+1 > width {
+		leftBudget := width - rw - 1
+		if leftBudget < 8 && width > 24 {
+			// Right segment is eating the line: cap it at ~60% of the width.
+			right = truncate(right, width*3/5)
+			rw = ansi.StringWidth(right)
+			leftBudget = width - rw - 1
+		}
+		if leftBudget < 1 {
+			return truncate(right, width)
+		}
+		left = truncate(left, leftBudget)
+		lw = ansi.StringWidth(left)
 	}
 	gap := width - lw - rw
 	if gap < 1 {

@@ -111,7 +111,7 @@ func init() {
 	pf.BoolVar(&flagMini, "mini", false, "start the minimal interface")
 	pf.StringVar(&flagSkill, "skill", "", "activate a skill by name for this run")
 
-	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, miniCmd, tuiCmd, statsCmd, agentCmd, skillCmd)
+	rootCmd.AddCommand(runCmd, modelsCmd, configCmd, doctorCmd, authCmd, sessionCmd, versionCmd, completionCmd, initCmd, setupCmd, miniCmd, tuiCmd, statsCmd, agentCmd, skillCmd)
 }
 
 func isTTY() bool {
@@ -150,20 +150,6 @@ type app struct {
 	workdir     string
 	skills      []skill.Skill
 	activeSkill *skill.Skill
-}
-
-// resolveSkill returns the active skill for the current run, or nil.
-func (r *app) resolveSkill() *skill.Skill {
-	if flagSkill == "" {
-		return nil
-	}
-	for i := range r.skills {
-		if r.skills[i].Name == flagSkill {
-			return &r.skills[i]
-		}
-	}
-	r.console.Error("skill %q not found; see `kern skill list`", flagSkill)
-	return nil
 }
 
 func newRuntime(workdir string, opts runtimeOptions) (*app, error) {
@@ -983,18 +969,30 @@ var completionCmd = &cobra.Command{
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Run the first-launch wizard (theme, provider, API key, model)",
+	Short: "Set up Kern: theme, provider, API key and model",
+	Long: "Run the interactive wizard that writes ~/.kern/config/kern.json and\n" +
+		"stores the provider key in ~/.kern/config/auth.json.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if setup.IsInitialized() {
-			fmt.Println("Kern is already initialized.")
-			fmt.Printf("Config:  %s\n", filepath.Join(util.KernConfigDir(), "kern.json"))
-			fmt.Println("Run `kern auth list` to check stored keys.")
-			return nil
-		}
 		if !isTTY() {
-			return fmt.Errorf("wizard requires an interactive terminal")
+			return fmt.Errorf("the wizard needs an interactive terminal; use `kern auth set <provider> <key>` instead")
 		}
-		_, err := setup.Run()
+		if setup.IsInitialized() {
+			fmt.Printf("Kern is already configured (%s).\n", filepath.Join(util.KernConfigDir(), "kern.json"))
+			fmt.Print("Reconfigure it? [y/N]: ")
+			var answer string
+			fmt.Scanln(&answer)
+			if !strings.EqualFold(strings.TrimSpace(answer), "y") {
+				fmt.Println("Run `kern auth list` to check stored keys.")
+				return nil
+			}
+		}
+		_, err := setup.RunWith(os.Stdin, os.Stdout, true)
 		return err
 	},
+}
+
+var setupCmd = &cobra.Command{
+	Use:   "setup",
+	Short: "Alias for `kern init` (configure theme, provider and keys)",
+	RunE:  initCmd.RunE,
 }

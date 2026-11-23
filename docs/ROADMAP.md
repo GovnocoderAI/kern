@@ -2,25 +2,31 @@
 
 Kern aims to be a fast, open, production-grade coding agent for the terminal.
 
-## v0.2 — solid core (in progress)
+## v0.2 — solid core (done)
 
-- [x] Single static Go binary (Linux/Windows, x64/arm64), no cgo.
+- [x] Single static Go binary (Linux/macOS/Windows, amd64/arm64), no cgo.
 - [x] `opencode.json(c)` drop-in + `kern.json(c)` overlay, JSONC, `{env:}`, `{file:}`.
-- [x] OpenAI-compatible and Anthropic streaming providers.
-- [x] Tool loop: read, write, edit, bash, grep, glob, ls, todo, webfetch.
+- [x] OpenAI-compatible, Anthropic and Google Gemini streaming providers.
+- [x] Tool loop: read, write, edit, bash, grep, glob, ls, todo, webfetch,
+      process (live shell output), joke.
+- [x] Byte-safe output truncation in tools and agent summaries.
+- [x] Tool result pairing repair after an interrupted turn.
+- [x] Provider middleware: retry with backoff and jitter, response timeout.
+- [x] Error classification with stable exit codes (`internal/kerr`).
+- [x] Session event log with `Fold`/`AppendEvent`/`AppendCompact`.
 - [x] Permission rules (allow/ask/deny), workspace sandbox, `--auto`.
-- [x] Sessions with resume, fork, list, export, import.
-- [x] Console UI plus a full-screen TUI (unreleased; line interface via `kern mini`).
-- [ ] Byte-safe output truncation in tools and agent summaries.
-- [ ] Tool result pairing and stream-recovery fixes in the agent loop.
-- [ ] Provider middleware: retry with backoff, response-timeout handling.
+- [x] Symlink-aware sandbox (component walk, catches dangling-link escapes).
+- [x] Skills: markdown + frontmatter, project and global, `--skill`, `/skill`.
+- [x] Full-screen TUI: Chat, Files, Diff, Procs, Skills tabs.
+- [x] Four themes (amber, dark, light, blue) chosen in setup.
+- [x] First-run wizard (`kern init` / `kern setup`) with live key check.
+- [x] `~/.kern` home with `~/.config/kern` read as a legacy fallback.
+- [x] CI on Go 1.27, `go test -race` on Linux, six-target cross-compile.
+- [x] First preview release and installer scripts.
+
+## v0.2.x — surfaces (next)
+
 - [ ] Context compaction (summarize old turns, keep recent ones).
-- [ ] Error classification with stable exit codes (`kerr`).
-- [ ] CI on Go 1.26 with `go test -race` on Linux.
-- [ ] First public release (v0.2.0-rc.1) and installer scripts.
-
-## v0.2.x — surfaces
-
 - [ ] Headless server (`kern serve`, HTTP/SSE events, token auth) and `kern attach`.
 - [ ] Web UI (Vite + TypeScript, embedded into the binary).
 - [ ] Desktop app (Wails v2 shell around the same web UI, Windows + Linux).
@@ -30,7 +36,6 @@ Kern aims to be a fast, open, production-grade coding agent for the terminal.
 - [ ] Role presets: plan (read-only), build, test, review.
 - [ ] `task` tool: isolated subagent context with token/step/time budgets.
 - [ ] Plan → build → test loop with bounded iterations.
-- [ ] Google Gemini provider.
 - [ ] MCP servers (`kern mcp`).
 
 ## v0.4 — depth

@@ -5,7 +5,7 @@
 //	---
 //	name: code-review
 //	description: Reviews a diff for bugs and style issues
-//	model: plusvibe/[REDACTED].5
+//	model: plusvibe/claude-opus-5.5
 //	---
 //
 //	You are a careful reviewer...
