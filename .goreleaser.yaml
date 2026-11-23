@@ -61,27 +61,32 @@ release:
   prerelease: auto
   name_template: "Kern {{ .Tag }}"
   header: |
-    **Kern v0.2** — a fast, open coding agent for the terminal.
+    **Kern** — a fast, open coding agent for the terminal.
 
-    This is a preview build: the core agent, providers, tools, permissions,
-    sessions and the full-screen TUI work end to end, but the surface is still
-    moving and some features are experimental.
+    Preview build: the core agent, providers, tools, permissions, sessions, the
+    full-screen TUI, multi-agent roles, a local HTTP/SSE server and an embedded
+    web UI all work end to end. The surface is still moving.
 
     ### Highlights
 
-    - Full-screen TUI with five panels: Chat, Files, Diff, Procs, Skills
-    - Skills — markdown prompts with frontmatter, activated with `--skill` or `/skill`
+    - Three front ends: full-screen TUI, `kern run`, and a web UI (`kern serve`)
+    - `kern desktop` opens the web UI in an app window
+    - Multi-agent roles — plan (read-only), build, test, review — via the `task` tool
+    - Skills: markdown prompts with frontmatter, `--skill` or `/skill`
     - OpenAI-compatible, Anthropic and Google Gemini providers
+    - Credentials discovered from opencode, `.env`, Codex, Continue, Gemini CLI, Aider
     - Retry with backoff, byte-safe output, symlink-aware workspace sandbox
     - First-run wizard (`kern init`) for theme, provider, key and model
-    - Four themes: amber, dark, light, blue
 
     ### Quick start
 
     ```bash
-    kern init          # choose theme, provider, key and model
-    kern               # open the TUI
-    kern "summarise this repo"   # one-shot, non-interactive
+    kern init                      # theme, provider, key, model
+    kern                           # full-screen TUI
+    kern --agent plan "map this repo"
+    kern serve --open              # web UI in the browser
+    kern desktop                   # web UI in an app window
+    kern "summarise this repo"     # one-shot, non-interactive
     ```
 
   footer: |
